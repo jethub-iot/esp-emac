@@ -15,6 +15,8 @@ pub mod clock;
 pub mod config;
 pub mod dma;
 pub mod emac;
+#[cfg(feature = "embassy-net")]
+pub mod embassy;
 pub mod error;
 pub mod mdio;
 pub mod regs;
