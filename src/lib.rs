@@ -13,10 +13,12 @@
 
 pub mod config;
 pub mod dma;
+pub mod emac;
 pub mod error;
 pub mod mdio;
 pub mod regs;
 
 pub use config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins};
+pub use emac::{Duplex, Emac, EmacDefault, EmacSmall, EmacState, Speed};
 pub use error::EmacError;
 pub use mdio::{EspMdio, MdcClockDivider};
