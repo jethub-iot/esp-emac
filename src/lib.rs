@@ -11,6 +11,7 @@
 
 #![no_std]
 
+pub mod clock;
 pub mod config;
 pub mod dma;
 pub mod emac;

@@ -11,14 +11,15 @@
 //! 1. Enable DPORT peripheral clock
 //! 2. Configure SMI pins (MDC/MDIO via GPIO Matrix)
 //! 3. Configure RMII data pins (IO_MUX function 5)
-//! 4. Configure PHY interface (RMII mode, clock source)
-//! 5. Enable extension clocks and power up RAM
-//! 6. Software reset DMA
-//! 7. Configure MAC defaults
-//! 8. Configure DMA defaults
-//! 9. Initialize DMA descriptor chains
-//! 10. Program DMA base addresses
-//! 11. Program MAC address
+//! 4. Configure APLL and clock GPIO (APLL 50 MHz or external input)
+//! 5. Configure PHY interface (RMII mode, clock source)
+//! 6. Enable extension clocks and power up RAM
+//! 7. Software reset DMA
+//! 8. Configure MAC defaults
+//! 9. Configure DMA defaults
+//! 10. Initialize DMA descriptor chains
+//! 11. Program DMA base addresses
+//! 12. Program MAC address
 //!
 //! # Important: Placement Before Init
 //!
@@ -276,28 +277,31 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         // 3. Configure RMII data pins (fixed IO_MUX function 5).
         self.configure_rmii_data_pins();
 
-        // 4. Configure PHY interface (RMII mode + clock source).
+        // 4. Configure APLL and clock GPIO (must precede DMA reset).
+        self.configure_clock();
+
+        // 5. Configure PHY interface (RMII mode + clock source).
         self.configure_phy_interface();
 
-        // 5. Enable extension clocks and power up RAM.
+        // 6. Enable extension clocks and power up RAM.
         self.enable_ext_clocks();
 
-        // 6. DMA software reset.
+        // 7. DMA software reset.
         self.dma_software_reset()?;
 
-        // 7. Configure MAC defaults.
+        // 8. Configure MAC defaults.
         self.configure_mac_defaults();
 
-        // 8. Configure DMA defaults (bus mode + operation mode).
+        // 9. Configure DMA defaults (bus mode + operation mode).
         self.configure_dma_defaults();
 
-        // 9. Initialize DMA engine (descriptor chains).
+        // 10. Initialize DMA engine (descriptor chains).
         let (rx_base, tx_base) = self.dma.init();
 
-        // 10. Program DMA descriptor base addresses.
+        // 11. Program DMA descriptor base addresses.
         self.program_dma_addresses(rx_base, tx_base);
 
-        // 11. Program MAC address into filter registers.
+        // 12. Program MAC address into filter registers.
         self.program_mac_address();
 
         self.state = EmacState::Initialized;
@@ -479,6 +483,25 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
 
     // ── Private: hardware configuration ─────────────────────────────────
 
+    /// Configure APLL and clock GPIO based on the selected clock mode.
+    ///
+    /// For [`RmiiClockConfig::InternalApll`]: powers up APLL at 50 MHz
+    /// and configures the selected GPIO as clock output.
+    ///
+    /// For [`RmiiClockConfig::External`]: configures the selected GPIO
+    /// as clock input.
+    fn configure_clock(&self) {
+        match self.config.clock {
+            RmiiClockConfig::InternalApll { gpio } => {
+                crate::clock::configure_apll_50mhz();
+                crate::clock::configure_emac_clk_out(gpio);
+            }
+            RmiiClockConfig::External { gpio } => {
+                crate::clock::configure_emac_clk_in(gpio);
+            }
+        }
+    }
+
     /// Enable EMAC peripheral clock via DPORT_WIFI_CLK_EN_REG.
     fn enable_peripheral_clock(&self) {
         // SAFETY: DPORT register is always accessible.
@@ -574,6 +597,11 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
     }
 
     /// Configure PHY interface registers (RMII mode and clock source).
+    ///
+    /// GPIO clock I/O is configured in the preceding `configure_clock()` step
+    /// via [`clock::configure_apll_50mhz`] / [`clock::configure_emac_clk_out`] /
+    /// [`clock::configure_emac_clk_in`]. This method only sets the EMAC_EXT
+    /// registers for RMII mode and clock path selection.
     fn configure_phy_interface(&self) {
         // SAFETY: peripheral clock is enabled (step 1 ran already).
         unsafe {
@@ -586,24 +614,9 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
                 (conf & !crate::regs::ext::phyinf_conf::PHY_INTF_SEL_MASK) | rmii_val,
             );
 
-            // Clock source.
+            // Clock source path in EMAC_EXT registers.
             match self.config.clock {
-                RmiiClockConfig::External { gpio } => {
-                    // External clock input on GPIO0.
-                    if gpio == ClkGpio::Gpio0 {
-                        // Configure GPIO0 IO_MUX for EMAC_TX_CLK (function 5, input).
-                        let addr =
-                            crate::regs::ext::IO_MUX_BASE + crate::regs::ext::IO_MUX_GPIO0_OFFSET;
-                        let v = core::ptr::read_volatile(addr as *const u32);
-                        core::ptr::write_volatile(
-                            addr as *mut u32,
-                            (v & !IO_MUX_MCU_SEL_MASK)
-                                | (crate::regs::ext::IO_MUX_GPIO0_FUNC_EMAC_TX_CLK
-                                    << IO_MUX_MCU_SEL_SHIFT)
-                                | crate::regs::ext::IO_MUX_FUN_IE,
-                        );
-                    }
-
+                RmiiClockConfig::External { gpio: _ } => {
                     // EX_CLK_CTRL: ext_en=1, int_en=0.
                     let ctrl = crate::regs::ext::read(crate::regs::ext::EX_CLK_CTRL);
                     crate::regs::ext::write(
@@ -620,7 +633,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
                     );
                 }
                 RmiiClockConfig::InternalApll { gpio: _ } => {
-                    // Internal APLL clock (APLL must be configured externally).
+                    // APLL is already configured by configure_clock() (step 4).
                     // EX_CLK_CTRL: int_en=1, ext_en=0.
                     let ctrl = crate::regs::ext::read(crate::regs::ext::EX_CLK_CTRL);
                     crate::regs::ext::write(
