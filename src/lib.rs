@@ -12,6 +12,7 @@
 #![no_std]
 
 pub mod config;
+pub mod dma;
 pub mod error;
 pub mod mdio;
 pub mod regs;
