@@ -648,6 +648,18 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
                         crate::regs::ext::EX_OSCCLK_CONF,
                         osc & !crate::regs::ext::oscclk_conf::CLK_SEL,
                     );
+
+                    // EX_CLKOUT_CONF: clear DIV_NUM and H_DIV_NUM so APLL 50 MHz
+                    // passes through unmodified. Bootloader may leave non-zero
+                    // dividers here, which would divide the RMII clock and
+                    // prevent PHY from responding to MDIO.
+                    let clkout = crate::regs::ext::read(crate::regs::ext::EX_CLKOUT_CONF);
+                    crate::regs::ext::write(
+                        crate::regs::ext::EX_CLKOUT_CONF,
+                        clkout
+                            & !(crate::regs::ext::clkout_conf::DIV_NUM_MASK
+                                | crate::regs::ext::clkout_conf::H_DIV_NUM_MASK),
+                    );
                 }
             }
         }
