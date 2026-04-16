@@ -17,6 +17,12 @@ embassy-net-driver = { version = "0.2", optional = true }
 critical-section   = { version = "1.2", optional = true }
 defmt              = { version = "0.3", optional = true }
 
+# Phase 1 facade: delegate EMAC init/DMA to ph-esp32-mac.
+# Pinned by git rev so esp-emac builds standalone; the firmware workspace
+# overrides via [patch."https://github.com/jethome-iot/ph-esp32-mac"] in
+# src-hal/Cargo.toml to iterate on a local submodule.
+ph-esp32-mac = { git = "https://github.com/jethome-iot/ph-esp32-mac", rev = "a8358f247baf106ebf15b7ad14d1181e54d6a3ff", default-features = false, features = ["esp32", "critical-section", "embassy-net"] }
+
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }
 
@@ -24,4 +30,4 @@ critical-section = { version = "1.2", features = ["std"] }
 default     = []
 mdio-phy    = ["dep:eth-mdio-phy"]
 embassy-net = ["dep:embassy-net-driver", "dep:critical-section"]
-defmt       = ["dep:defmt"]
+defmt       = ["dep:defmt", "ph-esp32-mac/defmt"]

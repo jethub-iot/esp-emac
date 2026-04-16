@@ -34,6 +34,31 @@ pub enum EmacError {
     NotInitialized,
 }
 
+impl From<ph_esp32_mac::Error> for EmacError {
+    fn from(e: ph_esp32_mac::Error) -> Self {
+        use ph_esp32_mac::{ConfigError, DmaError, Error, IoError};
+        match e {
+            Error::Config(ConfigError::AlreadyInitialized)
+            | Error::Config(ConfigError::InvalidConfig)
+            | Error::Config(ConfigError::ClockError)
+            | Error::Config(ConfigError::GpioError) => EmacError::InvalidConfig,
+            Error::Config(ConfigError::InvalidPhyAddress) => EmacError::InvalidPhyAddress,
+            Error::Config(ConfigError::ResetFailed) => EmacError::Timeout,
+            Error::Dma(DmaError::NoDescriptorsAvailable) => EmacError::NoDescriptorsAvailable,
+            Error::Dma(DmaError::DescriptorBusy) => EmacError::DescriptorBusy,
+            Error::Dma(DmaError::FrameTooLarge) => EmacError::FrameTooLarge,
+            Error::Dma(DmaError::InvalidLength) => EmacError::InvalidLength,
+            Error::Dma(DmaError::FatalBusError) => EmacError::DmaError,
+            Error::Io(IoError::Timeout) => EmacError::Timeout,
+            Error::Io(IoError::InvalidState) => EmacError::NotInitialized,
+            Error::Io(IoError::BufferTooSmall) => EmacError::BufferTooSmall,
+            Error::Io(IoError::IncompleteFrame) => EmacError::NoFrameAvailable,
+            Error::Io(IoError::FrameError) => EmacError::FrameError,
+            Error::Io(IoError::PhyError) => EmacError::Timeout,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

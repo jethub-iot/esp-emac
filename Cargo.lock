@@ -76,11 +76,23 @@ dependencies = [
  "embassy-net-driver",
  "embedded-hal",
  "eth-mdio-phy",
+ "ph-esp32-mac",
 ]
 
 [[package]]
 name = "eth-mdio-phy"
 version = "0.1.0"
+
+[[package]]
+name = "ph-esp32-mac"
+version = "0.1.1"
+source = "git+https://github.com/jethome-iot/ph-esp32-mac?rev=a8358f247baf106ebf15b7ad14d1181e54d6a3ff#a8358f247baf106ebf15b7ad14d1181e54d6a3ff"
+dependencies = [
+ "critical-section",
+ "defmt 0.3.100",
+ "embassy-net-driver",
+ "embedded-hal",
+]
 
 [[package]]
 name = "proc-macro-error-attr2"
