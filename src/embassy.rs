@@ -33,6 +33,27 @@ use embassy_sync::waitqueue::AtomicWaker;
 use crate::emac::Emac;
 use crate::interrupt::InterruptStatus;
 
+/// Diagnostic snapshot of the ISR counters.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct IrqCounters {
+    /// Total number of times the ISR ran.
+    pub total: u32,
+    /// `RI` (rx_complete) flag observed.
+    pub ri: u32,
+    /// `RU` (rx_buf_unavailable) flag observed.
+    pub ru: u32,
+    /// `TI` (tx_complete) flag observed.
+    pub ti: u32,
+    /// `TU` (tx_buf_unavailable) flag observed.
+    pub tu: u32,
+    /// `ERI` (early receive) flag observed.
+    pub eri: u32,
+    /// At least one error flag observed (UNF/OVF/FBI).
+    pub err: u32,
+    /// Last raw `DMASTATUS` snapshot taken in the ISR (before W1C).
+    pub last_dmastat: u32,
+}
+
 /// Maximum frame size for stack-allocated copy buffers (Ethernet MTU + headers).
 const MAX_FRAME_SIZE: usize = 1600;
 
@@ -53,11 +74,22 @@ pub struct EmacDriverState {
     link_waker: AtomicWaker,
     link_state: Mutex<Cell<LinkState>>,
     /// Diagnostic counters — incremented in the ISR. Used by the dev-log
-    /// hypothesis H7 ("does the EMAC ISR actually fire?").
+    /// hypotheses H6/H7.
     irq_count: AtomicU32,
-    irq_rx: AtomicU32,
-    irq_tx: AtomicU32,
+    irq_ri: AtomicU32,
+    irq_ru: AtomicU32,
+    irq_ti: AtomicU32,
+    irq_tu: AtomicU32,
+    irq_eri: AtomicU32,
     irq_err: AtomicU32,
+    /// Last observed raw DMASTAT (snapshot taken in ISR, before W1C).
+    last_dmastat: AtomicU32,
+    /// Counters bumped by [`EmacDriver::receive`] / [`EmacDriver::transmit`]
+    /// to see how often embassy-net actually pulls data.
+    drv_rx_calls: AtomicU32,
+    drv_rx_some: AtomicU32,
+    drv_tx_calls: AtomicU32,
+    drv_tx_some: AtomicU32,
 }
 
 impl Default for EmacDriverState {
@@ -75,21 +107,41 @@ impl EmacDriverState {
             link_waker: AtomicWaker::new(),
             link_state: Mutex::new(Cell::new(LinkState::Down)),
             irq_count: AtomicU32::new(0),
-            irq_rx: AtomicU32::new(0),
-            irq_tx: AtomicU32::new(0),
+            irq_ri: AtomicU32::new(0),
+            irq_ru: AtomicU32::new(0),
+            irq_ti: AtomicU32::new(0),
+            irq_tu: AtomicU32::new(0),
+            irq_eri: AtomicU32::new(0),
             irq_err: AtomicU32::new(0),
+            last_dmastat: AtomicU32::new(0),
+            drv_rx_calls: AtomicU32::new(0),
+            drv_rx_some: AtomicU32::new(0),
+            drv_tx_calls: AtomicU32::new(0),
+            drv_tx_some: AtomicU32::new(0),
         }
     }
 
-    /// Read the ISR counters (total, rx-events, tx-events, error-events).
-    ///
-    /// Diagnostic only.
-    pub fn irq_counters(&self) -> (u32, u32, u32, u32) {
+    /// Diagnostic counters from the ISR.
+    pub fn irq_counters(&self) -> IrqCounters {
+        IrqCounters {
+            total: self.irq_count.load(Ordering::Relaxed),
+            ri: self.irq_ri.load(Ordering::Relaxed),
+            ru: self.irq_ru.load(Ordering::Relaxed),
+            ti: self.irq_ti.load(Ordering::Relaxed),
+            tu: self.irq_tu.load(Ordering::Relaxed),
+            eri: self.irq_eri.load(Ordering::Relaxed),
+            err: self.irq_err.load(Ordering::Relaxed),
+            last_dmastat: self.last_dmastat.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Diagnostic counters from `Driver::receive` / `Driver::transmit`.
+    pub fn driver_counters(&self) -> (u32, u32, u32, u32) {
         (
-            self.irq_count.load(Ordering::Relaxed),
-            self.irq_rx.load(Ordering::Relaxed),
-            self.irq_tx.load(Ordering::Relaxed),
-            self.irq_err.load(Ordering::Relaxed),
+            self.drv_rx_calls.load(Ordering::Relaxed),
+            self.drv_rx_some.load(Ordering::Relaxed),
+            self.drv_tx_calls.load(Ordering::Relaxed),
+            self.drv_tx_some.load(Ordering::Relaxed),
         )
     }
 
@@ -146,11 +198,23 @@ impl EmacDriverState {
         unsafe { core::ptr::write_volatile(dmastat as *mut u32, status.to_raw()) };
 
         self.irq_count.fetch_add(1, Ordering::Relaxed);
-        if status.rx_complete || status.rx_buf_unavailable {
-            self.irq_rx.fetch_add(1, Ordering::Relaxed);
+        self.last_dmastat.store(raw, Ordering::Relaxed);
+        if status.rx_complete {
+            self.irq_ri.fetch_add(1, Ordering::Relaxed);
         }
-        if status.tx_complete || status.tx_buf_unavailable {
-            self.irq_tx.fetch_add(1, Ordering::Relaxed);
+        if status.rx_buf_unavailable {
+            self.irq_ru.fetch_add(1, Ordering::Relaxed);
+        }
+        if status.tx_complete {
+            self.irq_ti.fetch_add(1, Ordering::Relaxed);
+        }
+        if status.tx_buf_unavailable {
+            self.irq_tu.fetch_add(1, Ordering::Relaxed);
+        }
+        // Early Receive Interrupt (ETI) is bit 14. We don't expose it in
+        // InterruptStatus today, so check the raw flag explicitly.
+        if (raw & (1 << 14)) != 0 {
+            self.irq_eri.fetch_add(1, Ordering::Relaxed);
         }
         if status.has_error() {
             self.irq_err.fetch_add(1, Ordering::Relaxed);
@@ -267,6 +331,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Driver for EmacDriver<'
         Self: 'a;
 
     fn receive(&mut self, cx: &mut Context<'_>) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        self.state.drv_rx_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: see `EmacDriver` doc.
         let emac = unsafe { &mut *self.emac };
 
@@ -277,6 +342,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Driver for EmacDriver<'
             }
         }
 
+        self.state.drv_rx_some.fetch_add(1, Ordering::Relaxed);
         Some((
             EmacRxToken {
                 emac: self.emac,
@@ -290,6 +356,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Driver for EmacDriver<'
     }
 
     fn transmit(&mut self, cx: &mut Context<'_>) -> Option<Self::TxToken<'_>> {
+        self.state.drv_tx_calls.fetch_add(1, Ordering::Relaxed);
         // SAFETY: see `EmacDriver` doc.
         let emac = unsafe { &mut *self.emac };
 
@@ -300,6 +367,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Driver for EmacDriver<'
             }
         }
 
+        self.state.drv_tx_some.fetch_add(1, Ordering::Relaxed);
         Some(EmacTxToken {
             emac: self.emac,
             _marker: PhantomData,
