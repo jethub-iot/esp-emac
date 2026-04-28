@@ -444,18 +444,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Driver for EmacDriver<'
         let mut caps = Capabilities::default();
         caps.max_transmission_unit = MTU;
         caps.max_burst_size = Some(1);
-        // DEBUG: tell smoltcp we (claim to) verify checksums in hardware
-        // for inbound frames. This skips its software verification — used
-        // to test the H11 hypothesis that RX-frame data is corrupted and
-        // failing smoltcp's own checksum check, which would silently drop
-        // ARP/ICMP requests targeted at us.
-        let mut cs = ChecksumCapabilities::default();
-        use embassy_net_driver::Checksum;
-        cs.ipv4 = Checksum::None;
-        cs.tcp = Checksum::None;
-        cs.udp = Checksum::None;
-        cs.icmpv4 = Checksum::None;
-        caps.checksum = cs;
+        caps.checksum = ChecksumCapabilities::default();
         caps
     }
 
