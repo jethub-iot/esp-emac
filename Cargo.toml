@@ -12,16 +12,18 @@ categories    = ["embedded", "no-std", "hardware-support"]
 
 [dependencies]
 embedded-hal       = "1.0"
+esp-hal            = { version = "1.0.0", features = ["esp32", "unstable"], optional = true }
 eth-mdio-phy       = { version = "0.1.0", path = "../eth-phy/crates/eth-mdio-phy", optional = true }
 embassy-net-driver = { version = "0.2", optional = true }
+embassy-sync       = { version = "0.7", optional = true }
 critical-section   = { version = "1.2", optional = true }
 defmt              = { version = "0.3", optional = true }
 
-# Phase 1 facade: delegate EMAC init/DMA to ph-esp32-mac.
-# Pinned by git rev so esp-emac builds standalone; the firmware workspace
-# overrides via [patch."https://github.com/jethome-iot/ph-esp32-mac"] in
-# src-hal/Cargo.toml to iterate on a local submodule.
-ph-esp32-mac = { git = "https://github.com/jethome-iot/ph-esp32-mac", rev = "a8358f247baf106ebf15b7ad14d1181e54d6a3ff", default-features = false, features = ["esp32", "critical-section", "embassy-net"] }
+# Phase 3 staging: register helpers (`MacRegs`, `DmaRegs`, `ExtRegs`,
+# `GpioMatrix`, `ResetController`) come from ph-esp32-mac for now.
+# They will be copied into our own `regs/*` modules in a follow-up so
+# we can drop this dependency entirely.
+ph-esp32-mac = { git = "https://github.com/jethome-iot/ph-esp32-mac", branch = "feat/expose-gpio-matrix-and-reset", default-features = false, features = ["esp32", "critical-section"] }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }
@@ -29,5 +31,8 @@ critical-section = { version = "1.2", features = ["std"] }
 [features]
 default     = []
 mdio-phy    = ["dep:eth-mdio-phy"]
-embassy-net = ["dep:embassy-net-driver", "dep:critical-section"]
+# Activate hardware integrations (esp-hal interrupt binding etc.)
+# Required for the firmware build; tests run without it.
+esp-hal     = ["dep:esp-hal"]
+embassy-net = ["dep:embassy-net-driver", "dep:embassy-sync", "dep:critical-section"]
 defmt       = ["dep:defmt", "ph-esp32-mac/defmt"]

@@ -32,6 +32,8 @@ pub enum EmacError {
     BufferTooSmall,
     /// DMA engine not initialized.
     NotInitialized,
+    /// `init()` was called twice.
+    AlreadyInitialized,
 }
 
 impl From<ph_esp32_mac::Error> for EmacError {

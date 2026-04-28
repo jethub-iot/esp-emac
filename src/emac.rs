@@ -1,40 +1,31 @@
 // SPDX-License-Identifier: GPL-2.0-or-later OR Apache-2.0
 // Copyright (c) Viacheslav Bocharov <v@baodeep.com> and JetHome (r)
 
-//! Main EMAC driver struct (Phase 1 facade).
+//! Native ESP32 EMAC driver — Phase 3 implementation.
 //!
-//! This implementation delegates the EMAC MAC/DMA work to
-//! [`ph_esp32_mac::Emac`] while keeping the esp-emac public surface the
-//! firmware depends on. It also keeps the APLL 50 MHz clock and GPIO
-//! clock-output setup in our [`crate::clock`] module, which ph-esp32-mac
-//! does not handle.
-//!
-//! # Init Sequence
-//!
-//! 1. Configure APLL 50 MHz and clock GPIO (ours, for `InternalApll` mode)
-//!    — or configure GPIO as clock input (`External` mode).
-//! 2. Delegate to [`ph_esp32_mac::Emac::init`] which handles SMI pins,
-//!    RMII data pins, DPORT clock, PHY interface regs, software reset,
-//!    MAC/DMA defaults, descriptor chains, and MAC address programming.
-//!
-//! # Migration note
-//!
-//! The crate will replace these delegations piece by piece in future
-//! phases (see `docs/plans/esp-emac-migration.md` in the firmware repo).
+//! Owns the DMA engine, drives the bring-up sequence directly via register
+//! helpers, and no longer wraps `ph_esp32_mac::Emac`. This is the staging
+//! point of the migration: register helpers (`MacRegs`, `DmaRegs`,
+//! `ExtRegs`, `GpioMatrix`, `ResetController`) are still imported from
+//! `ph_esp32_mac::unsafe_registers` while we copy them into our own
+//! `regs/*` modules in a follow-up.
 
 use embedded_hal::delay::DelayNs;
 
-use crate::config::{ClkGpio, EmacConfig, RmiiClockConfig};
-use crate::error::EmacError;
+use ph_esp32_mac::unsafe_registers::{DmaRegs, ExtRegs, GpioMatrix, MacRegs, ResetController};
 
-use ph_esp32_mac::{
-    DmaBurstLen as PhDmaBurstLen, Duplex as PhDuplex, EmacConfig as PhEmacConfig,
-    PhyInterface as PhPhyInterface, RmiiClockMode as PhRmiiClockMode, Speed as PhSpeed,
-    State as PhState,
-};
+use crate::config::{ClkGpio, EmacConfig, RmiiClockConfig};
+use crate::dma::engine::DmaEngine;
+use crate::error::EmacError;
+use crate::interrupt::InterruptStatus;
+use crate::regs::dma::{bus_mode, operation};
+use crate::regs::mac::{config, frame_filter};
+
+const SOFT_RESET_TIMEOUT_MS: u32 = 100;
+const TX_FIFO_FLUSH_TIMEOUT_US: u32 = 100_000;
 
 // =============================================================================
-// Link parameter types (stable public surface)
+// Link parameters and driver state
 // =============================================================================
 
 /// Link speed.
@@ -77,248 +68,358 @@ impl From<eth_mdio_phy::Duplex> for Duplex {
     }
 }
 
-impl From<Speed> for PhSpeed {
-    fn from(s: Speed) -> Self {
-        match s {
-            Speed::Mbps10 => PhSpeed::Mbps10,
-            Speed::Mbps100 => PhSpeed::Mbps100,
-        }
-    }
-}
-
-impl From<Duplex> for PhDuplex {
-    fn from(d: Duplex) -> Self {
-        match d {
-            Duplex::Half => PhDuplex::Half,
-            Duplex::Full => PhDuplex::Full,
-        }
-    }
-}
-
-// =============================================================================
-// Driver state
-// =============================================================================
-
 /// EMAC driver state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum EmacState {
     /// Not yet initialized.
     Uninitialized,
-    /// Initialized but not running.
+    /// `init()` succeeded but DMA/MAC are not running.
     Initialized,
-    /// Running (DMA active, can transmit/receive).
+    /// `start()` succeeded — DMA active, can transmit/receive.
     Running,
 }
 
-impl From<PhState> for EmacState {
-    fn from(s: PhState) -> Self {
-        match s {
-            PhState::Uninitialized => EmacState::Uninitialized,
-            PhState::Initialized | PhState::Stopped => EmacState::Initialized,
-            PhState::Running => EmacState::Running,
-        }
-    }
-}
-
 // =============================================================================
-// EMAC driver (facade)
+// EMAC driver
 // =============================================================================
 
-/// ESP32 EMAC driver with static DMA buffers.
+/// ESP32 EMAC driver with statically allocated DMA buffers.
 ///
-/// # Const Generics
-/// - `RX`: number of RX descriptors (default 10)
-/// - `TX`: number of TX descriptors (default 10)
-/// - `BUF`: buffer size per descriptor in bytes (default 1600)
+/// The DMA descriptor chain is self-referential, so the driver MUST be
+/// placed in its final memory location BEFORE [`init`](Self::init) is
+/// called.
 pub struct Emac<const RX: usize = 10, const TX: usize = 10, const BUF: usize = 1600> {
-    inner: ph_esp32_mac::Emac<RX, TX, BUF>,
+    dma: DmaEngine<RX, TX, BUF>,
     config: EmacConfig,
+    state: EmacState,
     mac_address: [u8; 6],
 }
 
 impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
-    /// Create a new EMAC driver (not yet initialized).
+    /// Create a new (uninitialized) driver.
     pub const fn new(config: EmacConfig) -> Self {
         Self {
-            inner: ph_esp32_mac::Emac::new(),
+            dma: DmaEngine::new(),
             config,
+            state: EmacState::Uninitialized,
             mac_address: [0; 6],
         }
     }
 
-    // ── State accessors ─────────────────────────────────────────────────
+    // ── State accessors ────────────────────────────────────────────────────
 
-    /// Get current driver state.
     #[inline(always)]
     pub fn state(&self) -> EmacState {
-        self.inner.state().into()
+        self.state
     }
 
-    /// Get the configured MAC address.
     #[inline(always)]
     pub fn mac_address(&self) -> [u8; 6] {
         self.mac_address
     }
 
-    /// Get a reference to the current configuration.
     #[inline(always)]
     pub fn config(&self) -> &EmacConfig {
         &self.config
     }
 
-    /// Set MAC address.
-    ///
-    /// If the driver has been initialized, the hardware MAC address
-    /// filter registers are updated immediately.
-    pub fn set_mac_address(&mut self, mac: [u8; 6]) {
-        self.mac_address = mac;
-        if self.inner.state() != PhState::Uninitialized {
-            self.inner.set_mac_address(&mac);
-        }
-    }
-
-    /// Set link speed. Call after PHY reports link status change.
-    pub fn set_speed(&mut self, speed: Speed) {
-        if self.inner.state() == PhState::Uninitialized {
-            return;
-        }
-        self.inner.set_speed(speed.into());
-    }
-
-    /// Set duplex mode. Call after PHY reports link status change.
-    pub fn set_duplex(&mut self, duplex: Duplex) {
-        if self.inner.state() == PhState::Uninitialized {
-            return;
-        }
-        self.inner.set_duplex(duplex.into());
-    }
-
     /// Total static memory used by this EMAC instance.
     pub const fn memory_usage() -> usize {
-        ph_esp32_mac::Emac::<RX, TX, BUF>::memory_usage()
+        DmaEngine::<RX, TX, BUF>::memory_usage()
     }
 
-    // ── Initialization ──────────────────────────────────────────────────
+    // ── Configuration ──────────────────────────────────────────────────────
+
+    /// Set the MAC address.
+    ///
+    /// If the driver has been initialized, the hardware filter registers
+    /// are updated immediately.
+    pub fn set_mac_address(&mut self, mac: [u8; 6]) {
+        self.mac_address = mac;
+        if self.state != EmacState::Uninitialized {
+            MacRegs::set_mac_address(&mac);
+        }
+    }
+
+    /// Apply the link speed reported by the PHY.
+    pub fn set_speed(&mut self, speed: Speed) {
+        if self.state == EmacState::Uninitialized {
+            return;
+        }
+        MacRegs::set_speed_100mbps(matches!(speed, Speed::Mbps100));
+    }
+
+    /// Apply the duplex mode reported by the PHY.
+    pub fn set_duplex(&mut self, duplex: Duplex) {
+        if self.state == EmacState::Uninitialized {
+            return;
+        }
+        MacRegs::set_duplex_full(matches!(duplex, Duplex::Full));
+    }
+
+    // ── Initialization ─────────────────────────────────────────────────────
 
     /// Initialize the EMAC peripheral.
     ///
-    /// Configures APLL + clock GPIO (our clock module), then delegates
-    /// to [`ph_esp32_mac::Emac::init`] for SMI/RMII pins, clocks,
-    /// software reset, MAC/DMA setup, and MAC address programming.
-    ///
-    /// Must be called with the [`Emac`] already in its final memory
-    /// location (the DMA descriptor chain is self-referential).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`EmacError`] if the underlying driver's init fails
-    /// (e.g. [`EmacError::Timeout`] on DMA reset timeout).
+    /// Sequence (mirrors the canonical ESP32 GMAC bring-up):
+    /// 1. APLL 50 MHz + RMII clock GPIO.
+    /// 2. SMI + RMII pin routing.
+    /// 3. DPORT EMAC peripheral clock enable.
+    /// 4. PHY interface mode (RMII) + clock source select.
+    /// 5. EMAC extension clocks + RAM power-up.
+    /// 6. DMA software reset.
+    /// 7. MAC config defaults (PS/FES/DM/ACS/JD/WD).
+    /// 8. DMA bus mode + operation mode defaults.
+    /// 9. DMA descriptor chains and base-address registers.
+    /// 10. MAC address program.
     pub fn init(&mut self, delay: &mut impl DelayNs) -> Result<(), EmacError> {
+        if self.state != EmacState::Uninitialized {
+            return Err(EmacError::AlreadyInitialized);
+        }
+
         // 1. Clock GPIO + APLL (or input pad for external clock).
-        //    ph-esp32-mac does not handle APLL — we do it here.
         self.configure_clock();
 
-        // 2. Build ph-esp32-mac config from ours + MAC address.
-        let ph_config = self.build_ph_config();
+        // 2. Configure SMI pins (MDC=GPIO23, MDIO=GPIO18) and RMII data
+        //    pins (fixed function 5).
+        if matches!(self.config.clock, RmiiClockConfig::External { .. }) {
+            ExtRegs::configure_gpio0_rmii_clock_input();
+        }
+        GpioMatrix::configure_smi_pins();
+        GpioMatrix::configure_rmii_pins();
 
-        // 3. Delegate the MAC/DMA init.
-        self.inner.init(ph_config, delay)?;
+        // 3. Enable EMAC peripheral clock through DPORT.
+        ExtRegs::enable_peripheral_clock();
 
+        // 4. PHY interface — RMII with the appropriate clock source.
+        ExtRegs::set_rmii_mode();
+        match self.config.clock {
+            RmiiClockConfig::External { .. } => ExtRegs::set_rmii_clock_external(),
+            RmiiClockConfig::InternalApll { .. } => ExtRegs::set_rmii_clock_internal(),
+        }
+
+        // 5. EMAC extension clocks + RAM power.
+        ExtRegs::enable_clocks();
+        ExtRegs::power_up_ram();
+
+        // 6. Software reset of the DMA controller.
+        let mut reset_ctrl = ResetController::with_timeout(BorrowedDelay(delay), SOFT_RESET_TIMEOUT_MS);
+        reset_ctrl.soft_reset().map_err(|_| EmacError::Timeout)?;
+
+        // 7. MAC configuration defaults: 100 Mbps full duplex, port select,
+        //    auto pad/CRC strip, jabber + watchdog disabled.
+        let mac_cfg = config::PORT_SELECT
+            | config::SPEED_100
+            | config::DUPLEX_FULL
+            | config::AUTO_PAD_CRC_STRIP
+            | config::JABBER_DISABLE
+            | config::WATCHDOG_DISABLE;
+        MacRegs::set_config(mac_cfg);
+
+        // Frame filter: pass all multicast (broadcast accepted by default).
+        MacRegs::set_frame_filter(frame_filter::PASS_ALL_MULTICAST);
+        MacRegs::set_hash_table(0);
+
+        // 8. DMA bus mode and operation mode.
+        //
+        // NOTE: ATDS (Alternate / Enhanced Descriptor Size) selects the
+        // 8-word (32-byte) descriptor layout. Our `dma::descriptor`
+        // structs use the 4-word (16-byte) legacy layout, so ATDS must
+        // stay clear — otherwise the DMA strides 32 bytes between
+        // descriptors and reads garbage.
+        let pbl = 32u32;
+        let bus = bus_mode::FIXED_BURST
+            | bus_mode::AAL
+            | bus_mode::USP
+            | ((pbl << bus_mode::PBL_SHIFT) & bus_mode::PBL_MASK);
+        DmaRegs::set_bus_mode(bus);
+        DmaRegs::set_operation_mode(operation::TSF | operation::RSF);
+        DmaRegs::disable_all_interrupts();
+        DmaRegs::clear_all_interrupts();
+
+        // 9. Descriptor chains. Returns physical base addresses suitable for
+        //    DMARXBASEADDR / DMATXBASEADDR.
+        let (rx_base, tx_base) = self.dma.init();
+        DmaRegs::set_rx_desc_list_addr(rx_base);
+        DmaRegs::set_tx_desc_list_addr(tx_base);
+
+        // 10. Programme the MAC address into ADDR0H / ADDR0L (with AE bit).
+        MacRegs::set_mac_address(&self.mac_address);
+
+        self.state = EmacState::Initialized;
         Ok(())
     }
 
-    /// Start the EMAC (enable DMA TX/RX and MAC TX/RX).
-    ///
-    /// After this call the driver is in [`EmacState::Running`] and can
-    /// transmit and receive frames.
-    pub fn enable(&mut self) {
-        let _ = self.inner.start();
+    /// Start TX/RX (DMA + MAC).
+    pub fn start(&mut self) -> Result<(), EmacError> {
+        match self.state {
+            EmacState::Initialized => {}
+            EmacState::Running => return Ok(()),
+            EmacState::Uninitialized => return Err(EmacError::NotInitialized),
+        }
+
+        // Reset descriptor ownership in case of a previous run.
+        let (_rx_base, _tx_base) = self.dma.reset();
+
+        DmaRegs::clear_all_interrupts();
+        DmaRegs::enable_default_interrupts();
+
+        // Enable MAC TX, then DMA TX, DMA RX, then MAC RX (matches the
+        // ordering from the ESP32 reference manual / IDF EMAC driver).
+        let cfg = MacRegs::config();
+        MacRegs::set_config(cfg | config::TX_ENABLE);
+
+        DmaRegs::start_tx();
+        DmaRegs::start_rx();
+
+        let cfg = MacRegs::config();
+        MacRegs::set_config(cfg | config::RX_ENABLE);
+
+        // Issue an RX poll demand so the DMA does not stay in Suspended
+        // state if all descriptors were already CPU-owned.
+        DmaRegs::rx_poll_demand();
+
+        self.state = EmacState::Running;
+        Ok(())
     }
 
-    /// Stop the EMAC.
-    pub fn disable(&mut self) {
-        let _ = self.inner.stop();
+    /// Stop TX/RX.
+    pub fn stop(&mut self) -> Result<(), EmacError> {
+        if self.state != EmacState::Running {
+            return Err(EmacError::NotInitialized);
+        }
+
+        // Stop DMA TX, wait for in-flight data to drain (best effort).
+        DmaRegs::stop_tx();
+
+        // Flush TX FIFO and wait for the bit to self-clear.
+        DmaRegs::flush_tx_fifo();
+        let mut waited_us = 0u32;
+        while waited_us < TX_FIFO_FLUSH_TIMEOUT_US {
+            if (DmaRegs::operation_mode() & operation::FTF) == 0 {
+                break;
+            }
+            waited_us += 10;
+        }
+
+        // Disable MAC TX and RX, then DMA RX.
+        let cfg = MacRegs::config();
+        MacRegs::set_config(cfg & !(config::TX_ENABLE | config::RX_ENABLE));
+
+        DmaRegs::stop_rx();
+        DmaRegs::disable_all_interrupts();
+
+        self.state = EmacState::Initialized;
+        Ok(())
     }
 
-    // ── TX / RX ─────────────────────────────────────────────────────────
+    // ── Frame I/O ─────────────────────────────────────────────────────────
 
-    /// Transmit a frame.
-    ///
-    /// Returns the number of bytes submitted.
+    /// Transmit a frame (blocking on descriptor availability is not
+    /// performed — caller must check [`can_transmit`](Self::can_transmit)
+    /// or be ready to receive `EmacError::TxBufferFull`).
     pub fn transmit(&mut self, data: &[u8]) -> Result<usize, EmacError> {
-        Ok(self.inner.transmit(data)?)
+        if self.state != EmacState::Running {
+            return Err(EmacError::NotInitialized);
+        }
+        let n = self.dma.transmit(data)?;
+        // Kick TX DMA out of suspended state if we just refilled descriptors.
+        DmaRegs::tx_poll_demand();
+        Ok(n)
     }
 
-    /// Receive a frame.
-    ///
-    /// Returns `Ok(Some(len))` on a good frame, `Ok(None)` when no
-    /// frame is available, or an error.
+    /// Receive a frame, if any.
     pub fn receive(&mut self, buffer: &mut [u8]) -> Result<Option<usize>, EmacError> {
-        if !self.inner.rx_available() {
-            return Ok(None);
+        if self.state != EmacState::Running {
+            return Err(EmacError::NotInitialized);
         }
-        match self.inner.receive(buffer) {
-            Ok(len) => Ok(Some(len)),
-            Err(ph_esp32_mac::Error::Io(ph_esp32_mac::IoError::IncompleteFrame)) => Ok(None),
-            Err(e) => Err(e.into()),
+        let result = self.dma.receive(buffer)?;
+        if result.is_some() {
+            // After freeing a descriptor, kick the RX poll demand so the
+            // DMA leaves Suspended state.
+            DmaRegs::rx_poll_demand();
         }
+        Ok(result)
     }
 
-    /// Check whether a received frame is available.
+    /// Whether a received frame is currently waiting in the ring.
     #[inline(always)]
     pub fn rx_available(&self) -> bool {
-        self.inner.rx_available()
+        self.dma.rx_available()
     }
 
-    /// Check whether the TX ring has room for a frame of `len` bytes.
+    /// Whether the TX ring has room for a frame of `len` bytes.
     #[inline(always)]
     pub fn can_transmit(&self, len: usize) -> bool {
-        self.inner.can_transmit(len)
+        self.dma.can_transmit(len)
     }
 
-    // ── Interrupt helpers ───────────────────────────────────────────────
-
-    /// Read DMA interrupt status register (raw bitfield).
-    pub fn interrupt_status(&self) -> u32 {
-        self.inner.interrupt_status().to_raw()
+    /// Whether at least one TX descriptor is available for the next frame.
+    #[inline(always)]
+    pub fn tx_ready(&self) -> bool {
+        self.dma.tx_available() > 0
     }
 
-    /// Clear DMA interrupt status flags (write-1-to-clear).
-    pub fn clear_interrupts(&self, flags: u32) {
-        let status = ph_esp32_mac::InterruptStatus::from_raw(flags);
-        self.inner.clear_interrupts(status);
+    // ── Interrupt helpers ──────────────────────────────────────────────────
+
+    /// Bind an interrupt handler to the EMAC peripheral and enable the
+    /// interrupt at the chip level.
+    #[cfg(feature = "esp-hal")]
+    pub fn bind_interrupt(&mut self, handler: esp_hal::interrupt::InterruptHandler) {
+        use esp_hal::peripherals::Interrupt;
+
+        for core in esp_hal::system::Cpu::other() {
+            esp_hal::interrupt::disable(core, Interrupt::ETH_MAC);
+        }
+        esp_hal::interrupt::bind_handler(Interrupt::ETH_MAC, handler);
+        let _ = esp_hal::interrupt::enable(Interrupt::ETH_MAC, handler.priority());
     }
 
-    /// Enable default DMA interrupts (TX, RX complete).
-    pub fn enable_interrupts(&self) {
-        self.inner.enable_tx_interrupt(true);
-        self.inner.enable_rx_interrupt(true);
+    /// Disable the EMAC interrupt at the chip level.
+    #[cfg(feature = "esp-hal")]
+    pub fn disable_interrupt(&mut self) {
+        use esp_hal::peripherals::Interrupt;
+        esp_hal::interrupt::disable(esp_hal::system::Cpu::current(), Interrupt::ETH_MAC);
     }
 
-    // ── Phase 1 facade escape hatch ─────────────────────────────────────
-
-    /// Access the underlying `ph-esp32-mac` driver.
-    ///
-    /// **This is a temporary escape hatch** introduced in Phase 1 of the
-    /// migration plan. It exists so the firmware can continue to use
-    /// `ph-esp32-mac` directly for PHY, MDIO, and embassy-net glue while
-    /// EMAC bring-up itself moves into esp-emac. Cold-boot regression
-    /// hunting on the JXD-PM380-E1ETH stand showed that our own PHY
-    /// driver (`eth-phy-lan87xx`), our MDIO bus (`EspMdio`), and our
-    /// `embassy::EmacDriver` wrapper still have a bug that wedges
-    /// unicast RX after a power cycle; routing the runtime path through
-    /// the proven-working ph-esp32-mac integration sidesteps it for now.
-    ///
-    /// Removed when phases 3.x replace the `eth-phy-lan87xx`/MDIO/embassy
-    /// path piece by piece. See `docs/plans/esp-emac-migration.md` in
-    /// the firmware repository.
-    #[doc(hidden)]
-    pub fn inner_mut(&mut self) -> &mut ph_esp32_mac::Emac<RX, TX, BUF> {
-        &mut self.inner
+    /// Read and parse the DMA status register.
+    pub fn interrupt_status(&self) -> InterruptStatus {
+        // SAFETY: read from a known-valid memory-mapped register.
+        let raw = unsafe {
+            core::ptr::read_volatile(
+                (crate::regs::dma::BASE + crate::regs::dma::DMASTATUS) as *const u32,
+            )
+        };
+        InterruptStatus::from_raw(raw)
     }
 
-    // ── Internal helpers ────────────────────────────────────────────────
+    /// Clear (write-1-to-clear) the given DMA status flags.
+    pub fn clear_interrupts(&self, status: InterruptStatus) {
+        let raw = status.to_raw();
+        // SAFETY: write to a known-valid memory-mapped register.
+        unsafe {
+            core::ptr::write_volatile(
+                (crate::regs::dma::BASE + crate::regs::dma::DMASTATUS) as *mut u32,
+                raw,
+            );
+        }
+    }
+
+    /// Convenience: handle the ISR — read status, return parsed copy,
+    /// clear flags. Equivalent to:
+    /// ```ignore
+    /// let s = emac.interrupt_status();
+    /// emac.clear_interrupts(s);
+    /// s
+    /// ```
+    pub fn handle_interrupt(&self) -> InterruptStatus {
+        let s = self.interrupt_status();
+        self.clear_interrupts(s);
+        s
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────────
 
     fn configure_clock(&self) {
         match self.config.clock {
@@ -329,25 +430,6 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
             RmiiClockConfig::External { gpio } => {
                 crate::clock::configure_emac_clk_in(gpio);
             }
-        }
-    }
-
-    fn build_ph_config(&self) -> PhEmacConfig {
-        let rmii_clock = match self.config.clock {
-            RmiiClockConfig::InternalApll { gpio } => PhRmiiClockMode::InternalOutput {
-                gpio: clk_gpio_to_u8(gpio),
-            },
-            RmiiClockConfig::External { gpio } => PhRmiiClockMode::ExternalInput {
-                gpio: clk_gpio_to_u8(gpio),
-            },
-        };
-
-        PhEmacConfig {
-            phy_interface: PhPhyInterface::Rmii,
-            rmii_clock,
-            mac_address: self.mac_address,
-            dma_burst_len: PhDmaBurstLen::Burst32,
-            ..PhEmacConfig::new()
         }
     }
 }
@@ -363,18 +445,25 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Default for Emac<RX, TX
     }
 }
 
-/// Convenience alias: 10 RX / 10 TX / 1600-byte buffers (32 KB SRAM).
+/// Convenience alias: 10 RX / 10 TX / 1600-byte buffers.
 pub type EmacDefault = Emac<10, 10, 1600>;
 
-/// Convenience alias: 4 RX / 4 TX / 1600-byte buffers (13 KB SRAM).
+/// Convenience alias: 4 RX / 4 TX / 1600-byte buffers.
 pub type EmacSmall = Emac<4, 4, 1600>;
 
 // =============================================================================
 // Helpers
 // =============================================================================
 
-const fn clk_gpio_to_u8(gpio: ClkGpio) -> u8 {
-    gpio.gpio_num()
+/// Wraps a `&mut DelayNs` so it can be passed by value to APIs that take
+/// an owned `DelayNs` implementor (such as
+/// `ph_esp32_mac::ResetController::with_timeout`).
+struct BorrowedDelay<'a, D: DelayNs + ?Sized>(&'a mut D);
+
+impl<D: DelayNs + ?Sized> DelayNs for BorrowedDelay<'_, D> {
+    fn delay_ns(&mut self, ns: u32) {
+        self.0.delay_ns(ns);
+    }
 }
 
 // =============================================================================
@@ -386,28 +475,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn speed_roundtrip() {
-        assert_eq!(PhSpeed::from(Speed::Mbps10), PhSpeed::Mbps10);
-        assert_eq!(PhSpeed::from(Speed::Mbps100), PhSpeed::Mbps100);
+    fn new_is_uninitialized() {
+        let emac = EmacDefault::default();
+        assert_eq!(emac.state(), EmacState::Uninitialized);
+        assert_eq!(emac.mac_address(), [0u8; 6]);
     }
 
     #[test]
-    fn duplex_roundtrip() {
-        assert_eq!(PhDuplex::from(Duplex::Full), PhDuplex::Full);
-        assert_eq!(PhDuplex::from(Duplex::Half), PhDuplex::Half);
+    fn set_mac_before_init_only_caches() {
+        let mut emac = EmacDefault::default();
+        let mac = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66];
+        emac.set_mac_address(mac);
+        assert_eq!(emac.mac_address(), mac);
+        // No register writes performed because state is Uninitialized.
     }
 
     #[test]
-    fn state_maps_stopped_to_initialized() {
-        assert_eq!(
-            EmacState::from(PhState::Uninitialized),
-            EmacState::Uninitialized
-        );
-        assert_eq!(
-            EmacState::from(PhState::Initialized),
-            EmacState::Initialized
-        );
-        assert_eq!(EmacState::from(PhState::Stopped), EmacState::Initialized);
-        assert_eq!(EmacState::from(PhState::Running), EmacState::Running);
+    fn memory_usage_matches_dma() {
+        assert_eq!(EmacDefault::memory_usage(), DmaEngine::<10, 10, 1600>::memory_usage());
     }
 }
