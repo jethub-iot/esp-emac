@@ -33,6 +33,33 @@ use embassy_sync::waitqueue::AtomicWaker;
 use crate::emac::Emac;
 use crate::interrupt::InterruptStatus;
 
+/// Diagnostic snapshot of the `Driver::receive` / `Driver::transmit`
+/// path: how many times embassy-net asked for a token, how many of
+/// those calls actually had a frame, and how many frames the tokens
+/// failed to push to / pull from the EMAC.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DriverCounters {
+    /// Calls to `Driver::receive`.
+    pub rx_calls: u32,
+    /// Calls that returned a non-empty token pair (frame available).
+    pub rx_some: u32,
+    /// Frames silently dropped in `EmacRxToken::consume` because the
+    /// underlying `Emac::receive` returned `Err(_)` or `Ok(None)` after
+    /// the driver had already handed out a token. Indicates either an
+    /// errored frame (CRC, oversize) or a race where another path
+    /// consumed the descriptor first.
+    pub rx_dropped: u32,
+    /// Calls to `Driver::transmit`.
+    pub tx_calls: u32,
+    /// Calls that returned a token (TX path was ready).
+    pub tx_some: u32,
+    /// Frames silently dropped in `EmacTxToken::consume` because
+    /// `Emac::transmit` returned `Err(_)` after the driver had already
+    /// handed out a token. Typical cause: descriptor ring exhausted
+    /// between the readiness check and the actual push.
+    pub tx_dropped: u32,
+}
+
 /// Diagnostic snapshot of the ISR counters.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct IrqCounters {
@@ -88,8 +115,10 @@ pub struct EmacDriverState {
     /// to see how often embassy-net actually pulls data.
     drv_rx_calls: AtomicU32,
     drv_rx_some: AtomicU32,
+    drv_rx_dropped: AtomicU32,
     drv_tx_calls: AtomicU32,
     drv_tx_some: AtomicU32,
+    drv_tx_dropped: AtomicU32,
 }
 
 impl Default for EmacDriverState {
@@ -116,8 +145,10 @@ impl EmacDriverState {
             last_dmastat: AtomicU32::new(0),
             drv_rx_calls: AtomicU32::new(0),
             drv_rx_some: AtomicU32::new(0),
+            drv_rx_dropped: AtomicU32::new(0),
             drv_tx_calls: AtomicU32::new(0),
             drv_tx_some: AtomicU32::new(0),
+            drv_tx_dropped: AtomicU32::new(0),
         }
     }
 
@@ -135,14 +166,17 @@ impl EmacDriverState {
         }
     }
 
-    /// Diagnostic counters from `Driver::receive` / `Driver::transmit`.
-    pub fn driver_counters(&self) -> (u32, u32, u32, u32) {
-        (
-            self.drv_rx_calls.load(Ordering::Relaxed),
-            self.drv_rx_some.load(Ordering::Relaxed),
-            self.drv_tx_calls.load(Ordering::Relaxed),
-            self.drv_tx_some.load(Ordering::Relaxed),
-        )
+    /// Diagnostic counters from `Driver::receive` / `Driver::transmit`
+    /// and the matching tokens.
+    pub fn driver_counters(&self) -> DriverCounters {
+        DriverCounters {
+            rx_calls: self.drv_rx_calls.load(Ordering::Relaxed),
+            rx_some: self.drv_rx_some.load(Ordering::Relaxed),
+            rx_dropped: self.drv_rx_dropped.load(Ordering::Relaxed),
+            tx_calls: self.drv_tx_calls.load(Ordering::Relaxed),
+            tx_some: self.drv_tx_some.load(Ordering::Relaxed),
+            tx_dropped: self.drv_tx_dropped.load(Ordering::Relaxed),
+        }
     }
 
     /// Read the cached link state.
@@ -282,6 +316,7 @@ impl<'d, const RX: usize, const TX: usize, const BUF: usize> EmacDriver<'d, RX, 
 /// embassy-net RX token — copies one received frame on `consume`.
 pub struct EmacRxToken<'a, const RX: usize, const TX: usize, const BUF: usize> {
     emac: *mut Emac<RX, TX, BUF>,
+    state: &'a EmacDriverState,
     _marker: PhantomData<&'a mut Emac<RX, TX, BUF>>,
 }
 
@@ -295,14 +330,25 @@ impl<const RX: usize, const TX: usize, const BUF: usize> RxToken for EmacRxToken
         // lifetime tracked by `'a`; tokens are consumed synchronously by
         // the embassy stack.
         let emac = unsafe { &mut *self.emac };
-        let len = emac.receive(&mut buffer).ok().flatten().unwrap_or(0);
-        f(&mut buffer[..len])
+        match emac.receive(&mut buffer) {
+            Ok(Some(n)) => f(&mut buffer[..n]),
+            // No frame after we already handed out a token — either an
+            // error path (FrameError, BufferTooSmall: descriptor was
+            // recycled by the engine) or a race where another caller
+            // consumed it. Bump `rx_dropped` so the drop is observable
+            // and pass an empty slice to satisfy the `RxToken` contract.
+            Ok(None) | Err(_) => {
+                self.state.drv_rx_dropped.fetch_add(1, Ordering::Relaxed);
+                f(&mut [])
+            }
+        }
     }
 }
 
 /// embassy-net TX token — submits one frame on `consume`.
 pub struct EmacTxToken<'a, const RX: usize, const TX: usize, const BUF: usize> {
     emac: *mut Emac<RX, TX, BUF>,
+    state: &'a EmacDriverState,
     _marker: PhantomData<&'a mut Emac<RX, TX, BUF>>,
 }
 
@@ -316,7 +362,12 @@ impl<const RX: usize, const TX: usize, const BUF: usize> TxToken for EmacTxToken
         let result = f(&mut buffer[..len]);
         // SAFETY: see `EmacRxToken::consume`.
         let emac = unsafe { &mut *self.emac };
-        let _ = emac.transmit(&buffer[..len]);
+        if emac.transmit(&buffer[..len]).is_err() {
+            // `embassy-net-driver`'s `TxToken::consume` has no fallible
+            // return, so a failed push silently drops the frame. Bump
+            // `tx_dropped` for diagnostics.
+            self.state.drv_tx_dropped.fetch_add(1, Ordering::Relaxed);
+        }
         result
     }
 }
@@ -351,10 +402,12 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Driver for EmacDriver<'
         Some((
             EmacRxToken {
                 emac: self.emac,
+                state: self.state,
                 _marker: PhantomData,
             },
             EmacTxToken {
                 emac: self.emac,
+                state: self.state,
                 _marker: PhantomData,
             },
         ))
@@ -375,6 +428,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Driver for EmacDriver<'
         self.state.drv_tx_some.fetch_add(1, Ordering::Relaxed);
         Some(EmacTxToken {
             emac: self.emac,
+            state: self.state,
             _marker: PhantomData,
         })
     }
