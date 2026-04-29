@@ -418,9 +418,15 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Driver for EmacDriver<'
         // SAFETY: see `EmacDriver` doc.
         let emac = unsafe { &mut *self.emac };
 
-        if !emac.tx_ready() {
+        // Gate on capacity for a worst-case MTU-sized frame, not just
+        // "≥ 1 free descriptor". A frame larger than `BUF` consumes
+        // `len.div_ceil(BUF)` descriptors, so on rings where `BUF < MTU`
+        // a single-descriptor readiness check would let the driver hand
+        // out a token that `EmacTxToken::consume` then can't actually
+        // push, silently dropping the frame.
+        if !emac.can_transmit(MTU) {
             self.state.tx_waker.register(cx.waker());
-            if !emac.tx_ready() {
+            if !emac.can_transmit(MTU) {
                 return None;
             }
         }
