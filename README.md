@@ -8,12 +8,16 @@ register helpers — no `ph-esp32-mac`, no `esp-idf-svc`, no
 `esp-eth`.
 
 Targets the **built-in EMAC** on the original ESP32 (Xtensa, dual-core).
-ESP32-S3 / C6 / H2 don't have an EMAC peripheral; for those use SPI
-Ethernet (e.g. W5500 / ENC28J60). The driver is intended to run only
-on ESP32 / Xtensa targets — bare-metal MMIO writes are unconditional
-and assume the ESP32 memory map. Pure register-arithmetic unit tests
-do build and run on the host (`cargo test --target $HOST_TARGET`),
-which is how `regs/*` is exercised in CI.
+Of the wider family, EMAC is also present on ESP32-P4 (RISC-V, with a
+newer Synopsys GMAC revision and a different GPIO Matrix layout) — but
+P4 is **not** supported here yet; adding it would require a chip-feature
+split through `regs::*`, see crate-level scope notes. The S2/S3/C2/C3/
+C5/C6/H2 line has no EMAC at all; for those use SPI Ethernet (e.g.
+W5500 / ENC28J60). The driver is intended to run only on the original
+ESP32 / Xtensa target — bare-metal MMIO writes are unconditional and
+assume that memory map. Pure register-arithmetic unit tests do build
+and run on the host (`cargo test --target $HOST_TARGET`), which is how
+`regs/*` is exercised in CI.
 
 ## What's in the box
 

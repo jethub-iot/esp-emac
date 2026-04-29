@@ -3,11 +3,15 @@
 
 //! GPIO Matrix configuration for ESP32 EMAC SMI and RMII signals.
 //!
-//! Scope: **original ESP32 (Xtensa LX6) only.** The EMAC peripheral
-//! does not exist on ESP32-S2/S3/C3/C6/H2, so neither does this code
-//! path. All addresses, signal indices and the `iomux_addr_for_gpio`
-//! lookup are hard-wired to the ESP32 memory map; do not assume
-//! portability.
+//! Scope: **original ESP32 (Xtensa LX6) only.** Of the ESP32 family,
+//! EMAC is present on the original ESP32 and on ESP32-P4 (the
+//! S2/S3/C2/C3/C5/C6/H2 line has no EMAC at all). P4 is a RISC-V
+//! chip with a different GPIO Matrix layout, a different IO_MUX
+//! address space, and a newer Synopsys GMAC revision — supporting it
+//! would require a chip-feature split through this module and is out
+//! of scope today. All addresses, signal indices and the
+//! `iomux_addr_for_gpio` lookup below are hard-wired to the original
+//! ESP32 memory map; do not assume portability.
 //!
 //! Why direct register access instead of `esp_hal::gpio` connect APIs:
 //! `esp-hal` 1.x has no `OutputSignal::EmacMdc` / `EmacMdo` /
