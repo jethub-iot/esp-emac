@@ -138,7 +138,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
     pub fn set_mac_address(&mut self, mac: [u8; 6]) {
         self.mac_address = mac;
         if self.state != EmacState::Uninitialized {
-            MacRegs::set_mac_address(&mac);
+            crate::regs::mac::set_mac_address(&mac);
         }
     }
 
@@ -245,7 +245,10 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         DmaRegs::set_tx_desc_list_addr(tx_base);
 
         // 10. Programme the MAC address into ADDR0H / ADDR0L (with AE bit).
-        MacRegs::set_mac_address(&self.mac_address);
+        // The internal filter latch on this Synopsys GMAC fires on the LOW
+        // write — `regs::mac::set_mac_address` writes HIGH first to keep
+        // the AE bit, then LOW to trigger the latch.
+        crate::regs::mac::set_mac_address(&self.mac_address);
 
         self.state = EmacState::Initialized;
         Ok(())

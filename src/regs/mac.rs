@@ -205,6 +205,29 @@ pub unsafe fn clear_bits(offset: usize, bits: u32) {
     write(offset, val & !bits);
 }
 
+/// Programme the primary MAC address into ADDR0H / ADDR0L (with AE bit).
+///
+/// The Synopsys DesignWare GMAC core latches the filter address on the
+/// write to **ADDR0L** (the low half). Therefore the high half (with the
+/// `AE` bit) MUST be written first, then the low half. Writing in the
+/// opposite order leaves the internal filter latched with the stale
+/// reset/efuse value while register read-back happily shows the new
+/// address — and unicast RX dies silently.
+pub fn set_mac_address(addr: &[u8; 6]) {
+    let high = (addr[4] as u32) | ((addr[5] as u32) << 8) | (1u32 << 31);
+    let low = (addr[0] as u32)
+        | ((addr[1] as u32) << 8)
+        | ((addr[2] as u32) << 16)
+        | ((addr[3] as u32) << 24);
+    // SAFETY: ADDR0H/ADDR0L are valid 32-bit MAC registers; caller has
+    // already enabled the EMAC peripheral clock by the time `init()`
+    // reaches this step.
+    unsafe {
+        write(GMACADDR0H, high);
+        write(GMACADDR0L, low);
+    }
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
