@@ -441,7 +441,6 @@ dependencies = [
  "embedded-hal 1.0.0",
  "esp-hal",
  "eth-mdio-phy",
- "ph-esp32-mac",
 ]
 
 [[package]]
@@ -817,16 +816,6 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
-
-[[package]]
-name = "ph-esp32-mac"
-version = "0.1.1"
-source = "git+https://github.com/jethome-iot/ph-esp32-mac?branch=feat/expose-gpio-matrix-and-reset#2a96adc1362bc3d01c56ee8140a5feafe374b6aa"
-dependencies = [
- "critical-section",
- "defmt 0.3.100",
- "embedded-hal 1.0.0",
-]
 
 [[package]]
 name = "pin-project-lite"
