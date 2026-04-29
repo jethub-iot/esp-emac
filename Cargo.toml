@@ -6,7 +6,7 @@ rust-version  = "1.75"
 authors       = ["Viacheslav Bocharov <v@baodeep.com>", "JetHome (r)"]
 license       = "GPL-2.0-or-later OR Apache-2.0"
 description   = "ESP32 EMAC bare-metal Ethernet MAC driver with DMA, RMII, and MDIO"
-repository    = "https://github.com/jethub-iot/esp-emac"
+repository    = "https://github.com/jethub-iot/esp-emac-rs"
 keywords      = ["embedded", "no-std", "esp32", "ethernet", "emac"]
 categories    = ["embedded", "no-std", "hardware-support"]
 
