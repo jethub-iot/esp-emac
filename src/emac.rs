@@ -12,8 +12,9 @@
 
 use embedded_hal::delay::DelayNs;
 
-use ph_esp32_mac::unsafe_registers::{DmaRegs, ExtRegs, GpioMatrix, ResetController};
+use ph_esp32_mac::unsafe_registers::{DmaRegs, GpioMatrix, ResetController};
 
+use crate::regs::ext as ext_regs;
 use crate::regs::mac as mac_regs;
 
 use crate::config::{ClkGpio, EmacConfig, RmiiClockConfig};
@@ -186,24 +187,24 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         // 2. Configure SMI pins (MDC=GPIO23, MDIO=GPIO18) and RMII data
         //    pins (fixed function 5).
         if matches!(self.config.clock, RmiiClockConfig::External { .. }) {
-            ExtRegs::configure_gpio0_rmii_clock_input();
+            ext_regs::configure_gpio0_rmii_clock_input();
         }
         GpioMatrix::configure_smi_pins();
         GpioMatrix::configure_rmii_pins();
 
         // 3. Enable EMAC peripheral clock through DPORT.
-        ExtRegs::enable_peripheral_clock();
+        ext_regs::enable_peripheral_clock();
 
         // 4. PHY interface — RMII with the appropriate clock source.
-        ExtRegs::set_rmii_mode();
+        ext_regs::set_rmii_mode();
         match self.config.clock {
-            RmiiClockConfig::External { .. } => ExtRegs::set_rmii_clock_external(),
-            RmiiClockConfig::InternalApll { .. } => ExtRegs::set_rmii_clock_internal(),
+            RmiiClockConfig::External { .. } => ext_regs::set_rmii_clock_external(),
+            RmiiClockConfig::InternalApll { .. } => ext_regs::set_rmii_clock_internal(),
         }
 
         // 5. EMAC extension clocks + RAM power.
-        ExtRegs::enable_clocks();
-        ExtRegs::power_up_ram();
+        ext_regs::enable_clocks();
+        ext_regs::power_up_ram();
 
         // 6. Software reset of the DMA controller.
         let mut reset_ctrl =
