@@ -214,8 +214,10 @@ impl EmacDriverState {
         if status.tx_buf_unavailable {
             self.irq_tu.fetch_add(1, Ordering::Relaxed);
         }
-        // Early Receive Interrupt (ETI) is bit 14. We don't expose it in
-        // InterruptStatus today, so check the raw flag explicitly.
+        // Early Receive Interrupt (ERI) is bit 14 in DMASTATUS — not
+        // ETI, which is bit 10 (Early Transmit Interrupt). We don't
+        // expose ERI in `InterruptStatus` today, so check the raw flag
+        // explicitly to keep the diagnostic counter accurate.
         if (raw & (1 << 14)) != 0 {
             self.irq_eri.fetch_add(1, Ordering::Relaxed);
         }
