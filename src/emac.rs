@@ -12,7 +12,9 @@
 
 use embedded_hal::delay::DelayNs;
 
-use ph_esp32_mac::unsafe_registers::{DmaRegs, ExtRegs, GpioMatrix, MacRegs, ResetController};
+use ph_esp32_mac::unsafe_registers::{DmaRegs, ExtRegs, GpioMatrix, ResetController};
+
+use crate::regs::mac as mac_regs;
 
 use crate::config::{ClkGpio, EmacConfig, RmiiClockConfig};
 use crate::dma::engine::DmaEngine;
@@ -147,7 +149,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         if self.state == EmacState::Uninitialized {
             return;
         }
-        MacRegs::set_speed_100mbps(matches!(speed, Speed::Mbps100));
+        mac_regs::set_speed_100mbps(matches!(speed, Speed::Mbps100));
     }
 
     /// Apply the duplex mode reported by the PHY.
@@ -155,7 +157,7 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         if self.state == EmacState::Uninitialized {
             return;
         }
-        MacRegs::set_duplex_full(matches!(duplex, Duplex::Full));
+        mac_regs::set_duplex_full(matches!(duplex, Duplex::Full));
     }
 
     // ── Initialization ─────────────────────────────────────────────────────
@@ -216,11 +218,11 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
             | config::AUTO_PAD_CRC_STRIP
             | config::JABBER_DISABLE
             | config::WATCHDOG_DISABLE;
-        MacRegs::set_config(mac_cfg);
+        mac_regs::set_config(mac_cfg);
 
         // Frame filter: pass all multicast (broadcast accepted by default).
-        MacRegs::set_frame_filter(frame_filter::PASS_ALL_MULTICAST);
-        MacRegs::set_hash_table(0);
+        mac_regs::set_frame_filter(frame_filter::PASS_ALL_MULTICAST);
+        mac_regs::set_hash_table(0);
 
         // 8. DMA bus mode and operation mode.
         //
@@ -270,14 +272,14 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
 
         // Enable MAC TX, then DMA TX, DMA RX, then MAC RX (matches the
         // ordering from the ESP32 reference manual / IDF EMAC driver).
-        let cfg = MacRegs::config();
-        MacRegs::set_config(cfg | config::TX_ENABLE);
+        let cfg = mac_regs::config();
+        mac_regs::set_config(cfg | config::TX_ENABLE);
 
         DmaRegs::start_tx();
         DmaRegs::start_rx();
 
-        let cfg = MacRegs::config();
-        MacRegs::set_config(cfg | config::RX_ENABLE);
+        let cfg = mac_regs::config();
+        mac_regs::set_config(cfg | config::RX_ENABLE);
 
         // Issue an RX poll demand so the DMA does not stay in Suspended
         // state if all descriptors were already CPU-owned.
@@ -307,8 +309,8 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         }
 
         // Disable MAC TX and RX, then DMA RX.
-        let cfg = MacRegs::config();
-        MacRegs::set_config(cfg & !(config::TX_ENABLE | config::RX_ENABLE));
+        let cfg = mac_regs::config();
+        mac_regs::set_config(cfg & !(config::TX_ENABLE | config::RX_ENABLE));
 
         DmaRegs::stop_rx();
         DmaRegs::disable_all_interrupts();
