@@ -122,16 +122,20 @@ pub fn configure_smi_pins(mdc_gpio: u8, mdio_gpio: u8) {
 }
 
 /// Returns `true` if `gpio_num` is a valid GPIO for SMI (MDC or MDIO)
-/// routing on ESP32: it must have an IO_MUX register and a physical pad.
+/// routing on ESP32: it must have an IO_MUX register, a physical pad,
+/// and be output-capable.
 ///
-/// Valid range is `0..=23 ∪ 25..=39`. GPIO24 has no pad on any ESP32
-/// package, and there are no GPIOs above 39. GPIO34-39 are input-only,
-/// so they cannot drive MDC and cannot host bidirectional MDIO; a
-/// caller asking for them gets the same `false` here as for an
-/// out-of-range number.
+/// Accepted set is `{0..=23, 25..=27, 32..=33}`. Rejected:
+///
+/// - GPIO24 — no pad on any ESP32 package, no IO_MUX entry.
+/// - GPIO28-31 — not bonded to a pad, not present in the IO_MUX layout
+///   (see `iomux_addr_for_gpio` lookup).
+/// - GPIO34-39 — input-only on ESP32, so they cannot drive MDC and
+///   cannot host bidirectional MDIO.
+/// - Anything ≥ 40 — outside the documented GPIO range.
 #[must_use]
 pub const fn is_valid_smi_pin(gpio_num: u8) -> bool {
-    matches!(gpio_num, 0..=23 | 25..=33)
+    matches!(gpio_num, 0..=23 | 25..=27 | 32..=33)
 }
 
 /// Route the six fixed RMII data pins through IO_MUX function 5
@@ -381,18 +385,24 @@ mod tests {
         assert!(is_valid_smi_pin(18));
         // GPIO0 is sometimes used as a strapping pin but technically valid.
         assert!(is_valid_smi_pin(0));
-        // GPIO24 has no pad on any ESP32 package.
+        // Boundaries of the lower bank.
+        assert!(is_valid_smi_pin(23));
+        assert!(is_valid_smi_pin(25));
+        assert!(is_valid_smi_pin(27));
+        // GPIO24 has no pad / IO_MUX entry on any ESP32 package.
         assert!(!is_valid_smi_pin(24));
-        // Out-of-range.
-        assert!(!is_valid_smi_pin(40));
-        assert!(!is_valid_smi_pin(255));
-        // GPIO34-39 are input-only on ESP32, so they cannot host
-        // bidirectional MDIO nor drive MDC.
-        assert!(!is_valid_smi_pin(34));
-        assert!(!is_valid_smi_pin(39));
+        // GPIO28-31 are not bonded and have no IO_MUX entry.
+        assert!(!is_valid_smi_pin(28));
+        assert!(!is_valid_smi_pin(31));
         // Boundary of the output-capable upper bank.
         assert!(is_valid_smi_pin(32));
         assert!(is_valid_smi_pin(33));
+        // GPIO34-39 are input-only on ESP32.
+        assert!(!is_valid_smi_pin(34));
+        assert!(!is_valid_smi_pin(39));
+        // Out-of-range.
+        assert!(!is_valid_smi_pin(40));
+        assert!(!is_valid_smi_pin(255));
     }
 
     #[test]

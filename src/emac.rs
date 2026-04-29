@@ -337,9 +337,14 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
 
     // ── Frame I/O ─────────────────────────────────────────────────────────
 
-    /// Transmit a frame (blocking on descriptor availability is not
-    /// performed — caller must check [`can_transmit`](Self::can_transmit)
-    /// or be ready to receive `EmacError::TxBufferFull`).
+    /// Transmit a frame.
+    ///
+    /// Does not block on descriptor availability — caller must check
+    /// [`can_transmit`](Self::can_transmit) (or [`tx_ready`](Self::tx_ready)
+    /// for single-descriptor frames) before calling, or be ready to handle
+    /// `EmacError::NoDescriptorsAvailable` / `EmacError::DescriptorBusy`
+    /// when the TX ring is full, and `EmacError::FrameTooLarge` when the
+    /// payload exceeds the ring's combined capacity.
     pub fn transmit(&mut self, data: &[u8]) -> Result<usize, EmacError> {
         if self.state != EmacState::Running {
             return Err(EmacError::NotInitialized);
