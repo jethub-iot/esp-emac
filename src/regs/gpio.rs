@@ -122,17 +122,27 @@ pub fn configure_smi_pins(mdc_gpio: u8, mdio_gpio: u8) {
 }
 
 /// Returns `true` if `gpio_num` is a valid GPIO for SMI (MDC or MDIO)
-/// routing on ESP32: it must have an IO_MUX register, a physical pad,
-/// and be output-capable.
+/// routing on ESP32: the silicon must have an IO_MUX register for it
+/// (per ESP32 TRM Table 4-3), and the pad must be output-capable
+/// (rules out the input-only group GPIO34-39).
 ///
 /// Accepted set is `{0..=23, 25..=27, 32..=33}`. Rejected:
 ///
-/// - GPIO24 — no pad on any ESP32 package, no IO_MUX entry.
-/// - GPIO28-31 — not bonded to a pad, not present in the IO_MUX layout
-///   (see `iomux_addr_for_gpio` lookup).
+/// - GPIO24 — no IO_MUX entry on any ESP32 die variant.
+/// - GPIO28-31 — no IO_MUX entry, not present in the GPIO Matrix
+///   layout (see `iomux_addr_for_gpio` lookup).
 /// - GPIO34-39 — input-only on ESP32, so they cannot drive MDC and
 ///   cannot host bidirectional MDIO.
 /// - Anything ≥ 40 — outside the documented GPIO range.
+///
+/// **Pad availability is package-dependent.** Some accepted GPIOs
+/// (notably GPIO20) have an IO_MUX register on the silicon but are
+/// not bonded to a pad on the standard QFN modules (`ESP32-WROOM-32`,
+/// `ESP32-WROVER`, `ESP32-MINI`, etc.). The predicate intentionally
+/// follows what the datasheet allows — bare-die / custom-bond designs
+/// using e.g. GPIO20 for MDC are legal hardware and the driver must
+/// not lock them out. Module / board-level pinout is the integrator's
+/// responsibility, not this function's.
 #[must_use]
 pub const fn is_valid_smi_pin(gpio_num: u8) -> bool {
     matches!(gpio_num, 0..=23 | 25..=27 | 32..=33)
@@ -367,8 +377,10 @@ mod tests {
     #[test]
     fn iomux_addr_for_gpio20_is_known() {
         // GPIO20 has an IO_MUX register on ESP32 (`IO_MUX_GPIO20_REG` at
-        // `IO_MUX_BASE + 0x78`) even though it has no pad on the standard
-        // QFN packages.
+        // `IO_MUX_BASE + 0x78`). It isn't bonded on the standard QFN
+        // modules (WROOM/WROVER/MINI), but bare-die / custom designs
+        // can route it — the lookup follows the silicon, not module
+        // pinouts.
         assert_eq!(iomux_addr_for_gpio(20), Some(0x3FF4_9078));
     }
 
