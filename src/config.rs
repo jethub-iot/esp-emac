@@ -29,6 +29,11 @@ pub enum RmiiClockConfig {
     /// reference design preference). [`ClkGpio::Gpio0`] is **invalid**
     /// for this mode: GPIO0 function 5 is `EMAC_TX_CLK`, an input pad.
     ///
+    /// `xtal` selects the SDM coefficients for APLL programming and
+    /// MUST match the actual on-board crystal — there is no detection
+    /// at runtime, getting it wrong silently produces a wrong-frequency
+    /// REF_CLK and the link will not come up.
+    ///
     /// Coexistence note: ESP32 errata CLK-3.22 — the APLL clock signal
     /// emitted on the GPIO pad is corrupted by on-chip RF noise during
     /// WiFi/BT transmission. This mode is unsafe with active radio;
@@ -36,6 +41,9 @@ pub enum RmiiClockConfig {
     InternalApll {
         /// GPIO for clock output. Must be `Gpio16` or `Gpio17`.
         gpio: ClkGpio,
+        /// On-board crystal frequency. APLL SDM coefficients are
+        /// chosen accordingly to land on a 50 MHz RMII reference clock.
+        xtal: XtalFreq,
     },
     /// External 50 MHz clock fed in from a PHY crystal or oscillator.
     ///
@@ -49,6 +57,38 @@ pub enum RmiiClockConfig {
         /// GPIO for clock input. Must be `Gpio0`.
         gpio: ClkGpio,
     },
+}
+
+/// On-board crystal frequency in MHz, used to pick APLL SDM coefficients
+/// for a 50 MHz RMII reference-clock output.
+///
+/// ESP32 SoC accepts crystals at 26, 32, or 40 MHz. The vast majority
+/// of modules ship with 40 MHz (`ESP32-WROOM-32`, `ESP32-WROVER`,
+/// `ESP32-MINI-1` and most reference designs). 26 MHz appears in older
+/// QFN-only designs; 32 MHz is rare custom-design territory. The crate
+/// only provides coefficients for these three values — for any other
+/// crystal you will need to extend [`crate::clock::ApllCoefficients`]
+/// and submit a patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum XtalFreq {
+    /// 26 MHz — legacy ESP32 modules, certain QFN bare-chip designs.
+    Mhz26,
+    /// 32 MHz — rare custom designs.
+    Mhz32,
+    /// 40 MHz — ESP32-WROOM, ESP32-WROVER, ESP32-MINI, most modern boards.
+    Mhz40,
+}
+
+impl XtalFreq {
+    /// Frequency in MHz as a `u32`. Useful for logging / diagnostics.
+    pub const fn mhz(self) -> u32 {
+        match self {
+            Self::Mhz26 => 26,
+            Self::Mhz32 => 32,
+            Self::Mhz40 => 40,
+        }
+    }
 }
 
 /// GPIO pins that can carry the EMAC RMII reference clock on ESP32.
@@ -126,15 +166,30 @@ mod tests {
     fn rmii_clock_config_equality() {
         let a = RmiiClockConfig::InternalApll {
             gpio: ClkGpio::Gpio17,
+            xtal: XtalFreq::Mhz40,
         };
         let b = RmiiClockConfig::InternalApll {
             gpio: ClkGpio::Gpio17,
+            xtal: XtalFreq::Mhz40,
         };
         let c = RmiiClockConfig::External {
             gpio: ClkGpio::Gpio0,
         };
+        let d = RmiiClockConfig::InternalApll {
+            gpio: ClkGpio::Gpio17,
+            xtal: XtalFreq::Mhz26,
+        };
         assert_eq!(a, b);
         assert_ne!(a, c);
+        // Different XTAL — different config.
+        assert_ne!(a, d);
+    }
+
+    #[test]
+    fn xtal_freq_mhz_values() {
+        assert_eq!(XtalFreq::Mhz26.mhz(), 26);
+        assert_eq!(XtalFreq::Mhz32.mhz(), 32);
+        assert_eq!(XtalFreq::Mhz40.mhz(), 40);
     }
 
     #[test]
@@ -142,6 +197,7 @@ mod tests {
         let config = EmacConfig {
             clock: RmiiClockConfig::InternalApll {
                 gpio: ClkGpio::Gpio17,
+                xtal: XtalFreq::Mhz40,
             },
             pins: RmiiPins::default(),
         };

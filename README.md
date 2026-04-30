@@ -45,7 +45,7 @@ and run on the host (`cargo test --target $HOST_TARGET`), which is how
 ```rust no_run
 use esp_hal::delay::Delay;
 use esp_emac::{
-    Emac, EmacConfig, RmiiClockConfig, RmiiPins, ClkGpio,
+    Emac, EmacConfig, RmiiClockConfig, RmiiPins, ClkGpio, XtalFreq,
 };
 use esp_emac::mdio::EspMdio;
 use eth_phy_lan87xx::PhyLan87xx;
@@ -54,7 +54,10 @@ use eth_mdio_phy::PhyDriver;
 // 1. Static state — must outlive the driver because DMA holds raw
 //    pointers into it. const generics fix the buffer sizes.
 static mut EMAC: Emac<10, 10, 1600> = Emac::new(EmacConfig {
-    clock: RmiiClockConfig::InternalApll { gpio: ClkGpio::Gpio17 },
+    clock: RmiiClockConfig::InternalApll {
+        gpio: ClkGpio::Gpio17,
+        xtal: XtalFreq::Mhz40,
+    },
     pins: RmiiPins { mdc: 23, mdio: 18 },
 });
 
@@ -103,9 +106,17 @@ GPIO selections with `EmacError::InvalidConfig`.
 
 | Mode | GPIO | Direction | When to use | Caveat |
 | --- | --- | --- | --- | --- |
-| `InternalApll { Gpio16 }` | 16 | output (`EMAC_CLK_OUT`, 0°) | dev boards where the MCU drives the PHY's REF_CLK pin | Errata CLK-3.22 — clock pad is corrupted by RF noise during WiFi/BT TX. Avoid if the radio is active. |
-| `InternalApll { Gpio17 }` | 17 | output (`EMAC_CLK_OUT_180`, 180°) | LAN8720A reference design — phase shift improves RX setup margin | Same CLK-3.22 caveat. |
+| `InternalApll { Gpio16, xtal }` | 16 | output (`EMAC_CLK_OUT`, 0°) | dev boards where the MCU drives the PHY's REF_CLK pin | Errata CLK-3.22 — clock pad is corrupted by RF noise during WiFi/BT TX. Avoid if the radio is active. |
+| `InternalApll { Gpio17, xtal }` | 17 | output (`EMAC_CLK_OUT_180`, 180°) | LAN8720A reference design — phase shift improves RX setup margin | Same CLK-3.22 caveat. |
 | `External { Gpio0 }` | 0 | input (`EMAC_TX_CLK`) | production designs with a PHY crystal / oscillator (e.g. JXD-CPU-E1ETH); required for Ethernet + WiFi coexistence | GPIO0 is also the boot-strapping pin — make sure the oscillator level at reset matches the boot-mode requirement. |
+
+`xtal` is an [`XtalFreq`](src/config.rs) enum (`Mhz26`, `Mhz32`, `Mhz40`)
+selecting APLL SDM coefficients. **It must match the actual on-board
+crystal** — there is no detection at runtime, picking the wrong value
+silently produces a wrong-frequency RMII reference clock and the link
+won't come up. Most modules (`ESP32-WROOM`, `ESP32-WROVER`,
+`ESP32-MINI`, JXD-CPU-E1ETH) use 40 MHz; the older 26 MHz and rare
+32 MHz cases are also supported.
 
 `InternalApll { Gpio0 }` and `External { Gpio16/17 }` are
 hardware-impossible on ESP32 (function 5 direction is fixed per pad)

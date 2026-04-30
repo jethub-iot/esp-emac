@@ -20,13 +20,16 @@
 //!
 //! ```ignore
 //! use esp_emac::{
-//!     Emac, EmacConfig, RmiiClockConfig, RmiiPins, ClkGpio,
+//!     Emac, EmacConfig, RmiiClockConfig, RmiiPins, ClkGpio, XtalFreq,
 //!     embassy::{EmacDriver, EmacDriverState},
 //! };
 //! use esp_hal::interrupt::{InterruptHandler, Priority};
 //!
 //! static mut EMAC: Emac<10, 10, 1600> = Emac::new(EmacConfig {
-//!     clock: RmiiClockConfig::InternalApll { gpio: ClkGpio::Gpio17 },
+//!     clock: RmiiClockConfig::InternalApll {
+//!         gpio: ClkGpio::Gpio17,
+//!         xtal: XtalFreq::Mhz40,
+//!     },
 //!     pins: RmiiPins { mdc: 23, mdio: 18 },
 //! });
 //! static EMAC_STATE: EmacDriverState = EmacDriverState::new();

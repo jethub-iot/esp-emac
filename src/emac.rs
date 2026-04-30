@@ -163,16 +163,19 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
     /// Initialize the EMAC peripheral.
     ///
     /// Sequence (mirrors the canonical ESP32 GMAC bring-up):
-    /// 1. APLL 50 MHz + RMII clock GPIO.
-    /// 2. SMI + RMII pin routing.
-    /// 3. DPORT EMAC peripheral clock enable.
-    /// 4. PHY interface mode (RMII) + clock source select.
-    /// 5. EMAC extension clocks + RAM power-up.
-    /// 6. DMA software reset.
-    /// 7. MAC config defaults (PS/FES/DM/ACS/JD/WD).
-    /// 8. DMA bus mode + operation mode defaults.
-    /// 9. DMA descriptor chains and base-address registers.
-    /// 10. MAC address program.
+    /// 1. APLL 50 MHz programming — only when MCU is the RMII clock master
+    ///    (`RmiiClockConfig::InternalApll`); skipped for `External`.
+    /// 2. RMII reference-clock pad routing (GPIO0 input for External,
+    ///    GPIO16/17 output for InternalApll).
+    /// 3. SMI + RMII data-pin routing.
+    /// 4. DPORT EMAC peripheral clock enable.
+    /// 5. PHY interface mode (RMII) + clock source select.
+    /// 6. EMAC extension clocks + RAM power-up.
+    /// 7. DMA software reset.
+    /// 8. MAC config defaults (PS/FES/DM/ACS/JD/WD).
+    /// 9. DMA bus mode + operation mode defaults.
+    /// 10. DMA descriptor chains and base-address registers.
+    /// 11. MAC address program.
     pub fn init(&mut self, delay: &mut impl DelayNs) -> Result<(), EmacError> {
         if self.state != EmacState::Uninitialized {
             return Err(EmacError::AlreadyInitialized);
@@ -197,44 +200,57 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         // External clock therefore requires GPIO0 (the only input pad);
         // internal APLL output requires GPIO16 or GPIO17. Any other
         // combination is hardware-impossible — reject it before we
-        // start writing IO_MUX bits, since `configure_clock` would
-        // happily program an output pad as input or vice versa.
+        // start writing IO_MUX bits.
         match self.config.clock {
             RmiiClockConfig::External { gpio } if !matches!(gpio, ClkGpio::Gpio0) => {
                 return Err(EmacError::InvalidConfig);
             }
-            RmiiClockConfig::InternalApll { gpio } if matches!(gpio, ClkGpio::Gpio0) => {
+            RmiiClockConfig::InternalApll { gpio, .. } if matches!(gpio, ClkGpio::Gpio0) => {
                 return Err(EmacError::InvalidConfig);
             }
             _ => {}
         }
 
-        // 1. Clock GPIO + APLL (or input pad for external clock).
-        //    For `External { Gpio0 }` this configures IO_MUX function 5
-        //    on GPIO0, which is the only valid REF_CLK input pad — no
-        //    extra `configure_gpio0_rmii_clock_input` call is needed.
-        self.configure_clock();
+        // 1. APLL — programmed only when the MCU is the RMII clock
+        //    master. SDM coefficients are picked from the configured
+        //    on-board crystal (`xtal`) so the same code lands on
+        //    50 MHz on 26/32/40 MHz boards alike. APLL is independent
+        //    of the EMAC peripheral clock (only writes RTC analog +
+        //    ROM I2C on the always-on APB), so order here doesn't
+        //    matter. Skipped entirely for `External`.
+        if let RmiiClockConfig::InternalApll { xtal, .. } = self.config.clock {
+            crate::clock::configure_apll_50mhz(xtal);
+        }
 
-        // 2. Configure SMI pins (MDC/MDIO from `EmacConfig::pins`) and
+        // 2. Route the RMII reference-clock pad: input on GPIO0 for
+        //    `External`, or output on GPIO16/17 for `InternalApll`.
+        match self.config.clock {
+            RmiiClockConfig::External { gpio } => crate::clock::configure_emac_clk_in(gpio),
+            RmiiClockConfig::InternalApll { gpio, .. } => {
+                crate::clock::configure_emac_clk_out(gpio)
+            }
+        }
+
+        // 3. Configure SMI pins (MDC/MDIO from `EmacConfig::pins`) and
         //    RMII data pins (fixed function 5 — not configurable).
         gpio_matrix::configure_smi_pins(self.config.pins.mdc, self.config.pins.mdio);
         gpio_matrix::configure_rmii_pins();
 
-        // 3. Enable EMAC peripheral clock through DPORT.
+        // 4. Enable EMAC peripheral clock through DPORT.
         ext_regs::enable_peripheral_clock();
 
-        // 4. PHY interface — RMII with the appropriate clock source.
+        // 5. PHY interface — RMII with the appropriate clock source.
         ext_regs::set_rmii_mode();
         match self.config.clock {
             RmiiClockConfig::External { .. } => ext_regs::set_rmii_clock_external(),
             RmiiClockConfig::InternalApll { .. } => ext_regs::set_rmii_clock_internal(),
         }
 
-        // 5. EMAC extension clocks + RAM power.
+        // 6. EMAC extension clocks + RAM power.
         ext_regs::enable_clocks();
         ext_regs::power_up_ram();
 
-        // 6. Software reset of the DMA controller. `ResetController::new`
+        // 7. Software reset of the DMA controller. `ResetController::new`
         //    uses the canonical `crate::reset::SOFT_RESET_TIMEOUT_MS`
         //    default — single source of truth for the reset window.
         let mut reset_ctrl = ResetController::new(BorrowedDelay(delay));
@@ -485,20 +501,6 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         self.clear_interrupts_raw(raw);
         InterruptStatus::from_raw(raw)
     }
-
-    // ── Internal helpers ──────────────────────────────────────────────────
-
-    fn configure_clock(&self) {
-        match self.config.clock {
-            RmiiClockConfig::InternalApll { gpio } => {
-                crate::clock::configure_apll_50mhz();
-                crate::clock::configure_emac_clk_out(gpio);
-            }
-            RmiiClockConfig::External { gpio } => {
-                crate::clock::configure_emac_clk_in(gpio);
-            }
-        }
-    }
 }
 
 // `Default for Emac` is intentionally not implemented. The clock and pin
@@ -541,6 +543,7 @@ mod tests {
         EmacConfig {
             clock: RmiiClockConfig::InternalApll {
                 gpio: ClkGpio::Gpio17,
+                xtal: crate::config::XtalFreq::Mhz40,
             },
             pins: crate::config::RmiiPins::default(),
         }

@@ -21,7 +21,7 @@ pub mod mdio;
 pub mod regs;
 pub mod reset;
 
-pub use config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins};
+pub use config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
 pub use emac::{Duplex, Emac, EmacDefault, EmacSmall, EmacState, Speed};
 pub use error::EmacError;
 pub use interrupt::InterruptStatus;

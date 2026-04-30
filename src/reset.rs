@@ -12,10 +12,10 @@
 //! microseconds on real hardware) or pass a `DelayNs` implementation
 //! whose `delay_us` yields to the executor.
 //!
-//! For a true async variant — using
-//! [`embedded_hal_async::delay::DelayNs`] so each poll-step `.await`s
-//! and yields control back to the executor — enable the `async` cargo
-//! feature and use [`async_impl::AsyncResetController`].
+//! For a true async variant — using `embedded_hal_async::delay::DelayNs`
+//! so each poll-step `.await`s and yields control back to the executor —
+//! enable the `async` cargo feature and use the `AsyncResetController`
+//! re-exported from the `async_impl` module.
 
 use embedded_hal::delay::DelayNs;
 

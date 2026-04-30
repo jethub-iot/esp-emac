@@ -35,7 +35,7 @@
 //! - APLL I2C block ID: `0x6D`, host ID: **3** (verified on hardware).
 //! - ANA_CONF register (`0x3FF4_8030`): bit 24 = PU, bit 23 = PD.
 
-use crate::config::ClkGpio;
+use crate::config::{ClkGpio, XtalFreq};
 
 // =============================================================================
 // APLL ROM I2C constants
@@ -129,26 +129,102 @@ fn apll_write_mask(reg: u8, msb: u8, lsb: u8, val: u8) {
 // Public API
 // =============================================================================
 
-/// Configure ESP32 APLL to output 50 MHz for EMAC RMII clock.
+/// SDM coefficients for the ESP32 APLL.
 ///
-/// APLL formula: `freq = XTAL * (sdm2 + 4) / (2 * (o_div + 2))`
+/// Output frequency formula:
 ///
-/// For 40 MHz XTAL: `50 = 40 * (6 + 4) / (2 * (2 + 2)) = 400 / 8 = 50 MHz`
+/// ```text
+/// fout = fxtal * (sdm2 + sdm1/256 + sdm0/65536 + 4) / (2 * (o_div + 2))
+/// ```
+///
+/// For each supported on-board crystal, [`ApllCoefficients::for_xtal`]
+/// returns the coefficients that land on **50 MHz** (the RMII reference
+/// clock).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApllCoefficients {
+    /// Fine fractional multiplier (×1/65536). 8-bit field.
+    pub sdm0: u8,
+    /// Mid fractional multiplier (×1/256). 8-bit field.
+    pub sdm1: u8,
+    /// Integer-part multiplier (added to fixed +4). 6-bit field
+    /// (`apll_write_mask(7, 5, 0, sdm2)`).
+    pub sdm2: u8,
+    /// Output divider field. Final divisor is `2 * (o_div + 2)`. 5-bit
+    /// field (`apll_write_mask(4, 4, 0, o_div)`).
+    pub o_div: u8,
+}
+
+impl ApllCoefficients {
+    /// Look up the coefficients that produce a 50 MHz APLL output for
+    /// the given on-board crystal.
+    ///
+    /// Returns `None` for crystals not in the supported set
+    /// `{26, 32, 40} MHz`. Verified results (target 50.000 MHz):
+    ///
+    /// | XTAL  | sdm2 | sdm1 | sdm0 | o_div | Computed fout |
+    /// |-------|------|------|------|-------|---------------|
+    /// | 26 MHz| 11   | 98   | 118  | 2     | 50.0000 MHz   |
+    /// | 32 MHz| 8    | 128  | 0    | 2     | 50.0000 MHz   |
+    /// | 40 MHz| 6    | 0    | 0    | 2     | 50.0000 MHz   |
+    pub const fn for_xtal(xtal: XtalFreq) -> Self {
+        match xtal {
+            // 50 MHz = 26 MHz * (11 + 98/256 + 118/65536 + 4) / 8
+            XtalFreq::Mhz26 => Self {
+                sdm0: 118,
+                sdm1: 98,
+                sdm2: 11,
+                o_div: 2,
+            },
+            // 50 MHz = 32 MHz * (8 + 128/256 + 0/65536 + 4) / 8
+            XtalFreq::Mhz32 => Self {
+                sdm0: 0,
+                sdm1: 128,
+                sdm2: 8,
+                o_div: 2,
+            },
+            // 50 MHz = 40 MHz * (6 + 0 + 0 + 4) / 8
+            XtalFreq::Mhz40 => Self {
+                sdm0: 0,
+                sdm1: 0,
+                sdm2: 6,
+                o_div: 2,
+            },
+        }
+    }
+}
+
+/// Configure ESP32 APLL to output 50 MHz for EMAC RMII clock,
+/// using SDM coefficients chosen for the on-board crystal.
+///
+/// APLL formula: `fout = fxtal * (sdm2 + sdm1/256 + sdm0/65536 + 4) / (2 * (o_div + 2))`.
+/// See [`ApllCoefficients::for_xtal`] for the per-crystal table.
 ///
 /// This function:
 /// 1. Powers up APLL via ANA_CONF register
-/// 2. Configures SDM coefficients (sdm2=6, sdm1=0, sdm0=0, o_div=2)
+/// 2. Programmes SDM coefficients (`sdm2`/`sdm1`/`sdm0`/`o_div`) for the
+///    requested crystal
 /// 3. Runs the calibration sequence (from ESP-IDF `clk_ll_apll_set_config`)
 ///
 /// The EMAC_EXT clock path registers (RMII mode, int_en, clk_sel) are
 /// configured separately by [`Emac::init`](crate::emac::Emac::init).
 ///
+/// # Ordering
+///
+/// Independent of the EMAC peripheral clock — the routine only writes
+/// RTC analog registers (`ANA_CONF`) and APLL coefficients via the ROM
+/// I2C controller, both of which sit on the always-on APB clock from
+/// XTAL/main PLL. May be called before or after
+/// `ext::enable_peripheral_clock`. Only required when the MCU is the
+/// RMII clock master (i.e. `RmiiClockConfig::InternalApll`); skip it
+/// entirely for `RmiiClockConfig::External`.
+///
 /// # Safety
 ///
-/// This function writes to RTC analog registers and APLL coefficients
-/// via ROM I2C. The EMAC peripheral clock must be enabled before
-/// calling this function.
-pub fn configure_apll_50mhz() {
+/// Writes to RTC analog registers and APLL coefficients via ROM I2C.
+/// Don't call concurrently with other RTC analog reconfiguration.
+pub fn configure_apll_50mhz(xtal: XtalFreq) {
+    let c = ApllCoefficients::for_xtal(xtal);
+
     // Step 1: Power up APLL
     // ANA_CONF: clear PD (bit 23), set PU (bit 24)
     unsafe {
@@ -163,15 +239,15 @@ pub fn configure_apll_50mhz() {
         core::hint::spin_loop();
     }
 
-    // Step 2: APLL coefficients -- sdm2=6, sdm1=0, sdm0=0
-    apll_write_mask(7, 5, 0, 6); // sdm2
-    apll_write_mask(9, 7, 0, 0); // sdm0
-    apll_write_mask(8, 7, 0, 0); // sdm1
+    // Step 2: APLL coefficients — chosen by `for_xtal`.
+    apll_write_mask(7, 5, 0, c.sdm2);
+    apll_write_mask(9, 7, 0, c.sdm0);
+    apll_write_mask(8, 7, 0, c.sdm1);
 
     // Step 3: Calibration sequence (from ESP-IDF clk_ll_apll_set_config)
     regi2c_write(5, 0x09);
     regi2c_write(5, 0x49);
-    apll_write_mask(4, 4, 0, 2); // o_div
+    apll_write_mask(4, 4, 0, c.o_div);
     regi2c_write(0, 0x0F);
     regi2c_write(0, 0x3F);
     regi2c_write(0, 0x1F);
@@ -344,5 +420,68 @@ mod tests {
         // Max drive strength = 3, shifted to bits 11:10
         let max_drv = 3u32 << 10;
         assert_eq!(max_drv & FUN_DRV_MASK, max_drv);
+    }
+
+    // ── APLL coefficients ────────────────────────────────────────────────
+
+    /// Compute output frequency in MHz·Q16 fixed-point from APLL
+    /// coefficients, for a host-side sanity check that the table really
+    /// lands on 50 MHz. Matches the silicon formula:
+    ///   fout = fxtal * (sdm2 + sdm1/256 + sdm0/65536 + 4) / (2 * (o_div + 2))
+    fn fout_mhz_q16(c: ApllCoefficients, xtal_mhz: u32) -> u64 {
+        let num = (xtal_mhz as u64)
+            * (((c.sdm2 as u64 + 4) << 16) + (c.sdm1 as u64 * 256) + c.sdm0 as u64);
+        let denom = 2 * (c.o_div as u64 + 2);
+        num / denom
+    }
+
+    fn assert_50mhz(c: ApllCoefficients, xtal_mhz: u32) {
+        let q16 = fout_mhz_q16(c, xtal_mhz);
+        // 50 MHz in Q16: 50 << 16 = 3_276_800.
+        let target_q16 = 50u64 << 16;
+        // Allow ±0.001 MHz drift.
+        let drift = q16.abs_diff(target_q16);
+        assert!(
+            drift < 100,
+            "fout for {} MHz XTAL is {} (Q16) — drift {} from 50 MHz target",
+            xtal_mhz,
+            q16,
+            drift
+        );
+    }
+
+    #[test]
+    fn apll_coefficients_xtal_40_lands_on_50mhz() {
+        assert_50mhz(ApllCoefficients::for_xtal(XtalFreq::Mhz40), 40);
+    }
+
+    #[test]
+    fn apll_coefficients_xtal_32_lands_on_50mhz() {
+        assert_50mhz(ApllCoefficients::for_xtal(XtalFreq::Mhz32), 32);
+    }
+
+    #[test]
+    fn apll_coefficients_xtal_26_lands_on_50mhz() {
+        assert_50mhz(ApllCoefficients::for_xtal(XtalFreq::Mhz26), 26);
+    }
+
+    #[test]
+    fn apll_coefficients_register_field_widths() {
+        // o_div is a 5-bit field, sdm2 is 6-bit.
+        for xtal in [XtalFreq::Mhz26, XtalFreq::Mhz32, XtalFreq::Mhz40] {
+            let c = ApllCoefficients::for_xtal(xtal);
+            assert!(
+                c.o_div < 32,
+                "o_div for {:?} = {} doesn't fit 5 bits",
+                xtal,
+                c.o_div
+            );
+            assert!(
+                c.sdm2 < 64,
+                "sdm2 for {:?} = {} doesn't fit 6 bits",
+                xtal,
+                c.sdm2
+            );
+        }
     }
 }
