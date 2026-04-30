@@ -188,11 +188,20 @@ impl<const RX: usize, const TX: usize, const BUF: usize> DmaEngine<RX, TX, BUF> 
 
     // ── Reception ─────────────────────────────────────────
 
-    /// Check if a received frame is available.
+    /// Check if a complete received frame is available — including
+    /// multi-descriptor frames where the current descriptor is not
+    /// itself the last one. Equivalent to
+    /// `peek_frame_length().is_some()`.
+    ///
+    /// The previous implementation returned `true` only when the
+    /// current descriptor carried the `LAST` bit, which silently
+    /// disagreed with `receive` (which already supports multi-
+    /// descriptor frames) on rings with `BUF < MTU`: the embassy-net
+    /// driver would never wake on a scattered frame even though
+    /// `receive` would happily reassemble it.
     #[must_use]
     pub fn rx_available(&self) -> bool {
-        let desc = self.rx_ring.current();
-        !desc.is_owned() && desc.is_last()
+        self.peek_frame_length().is_some()
     }
 
     /// Receive a frame into the provided buffer.
@@ -749,6 +758,50 @@ mod tests {
         let _ = engine.init();
 
         assert_eq!(engine.peek_frame_length(), None);
+    }
+
+    /// Simulate a two-descriptor RX frame: `desc[start]` carries
+    /// `FIRST` + payload[..mid], `desc[start+1]` carries `LAST` +
+    /// payload[mid..] with the total frame length in its RDES0.
+    fn simulate_rx_frame_two_descriptors(
+        engine: &mut DmaEngine<4, 4, 256>,
+        start: usize,
+        chunks: (&[u8], &[u8]),
+    ) {
+        let (a, b) = chunks;
+        engine.rx_buffers[start][..a.len()].copy_from_slice(a);
+        engine.rx_buffers[start + 1][..b.len()].copy_from_slice(b);
+
+        // First descriptor: FIRST, no LAST, no length encoded
+        // (length lives in the LAST descriptor on this Synopsys core).
+        engine.rx_ring.get(start).set_raw_rdes0(rdes0::FIRST_DESC);
+
+        // Last descriptor: LAST, no FIRST, total frame length (incl. CRC).
+        let frame_len_with_crc = (a.len() + b.len() + 4) as u32;
+        let rdes0_val = rdes0::LAST_DESC | (frame_len_with_crc << rdes0::FRAME_LEN_SHIFT);
+        engine.rx_ring.get(start + 1).set_raw_rdes0(rdes0_val);
+    }
+
+    #[test]
+    fn rx_available_true_for_multi_descriptor_frame() {
+        // Regression: previous `rx_available` returned `!current.is_owned() &&
+        // current.is_last()`, which silently said "no frame" for any RX
+        // chain where the current descriptor was the FIRST (not LAST)
+        // chunk. Now it must agree with `peek_frame_length`.
+        let mut engine: DmaEngine<4, 4, 256> = DmaEngine::new();
+        let _ = engine.init();
+
+        let chunk_a = [0xAA; 200];
+        let chunk_b = [0xBB; 100];
+        simulate_rx_frame_two_descriptors(&mut engine, 0, (&chunk_a, &chunk_b));
+
+        // `current` points at desc[0] which is FIRST but NOT LAST. The
+        // pre-fix implementation returned `false` here.
+        assert!(
+            engine.rx_available(),
+            "rx_available must report a multi-descriptor frame as ready"
+        );
+        assert_eq!(engine.peek_frame_length(), Some(300));
     }
 
     #[test]
