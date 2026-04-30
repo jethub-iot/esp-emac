@@ -74,15 +74,26 @@ impl<D: DelayNs> ResetController<D> {
         // microseconds — much faster than any meaningful timeout).
         let max_iters = (u64::from(self.timeout_ms) * 1000 / u64::from(RESET_POLL_INTERVAL_US))
             .clamp(1, u64::from(u32::MAX)) as u32;
-        for _ in 0..max_iters {
+        // Read-then-(maybe-)delay loop: after the last read we go
+        // straight to `Timeout` instead of sleeping a final poll
+        // interval we'd never check. This keeps the actual wait at
+        // ≤ `(max_iters - 1) * RESET_POLL_INTERVAL_US` (matching
+        // `timeout_ms`) and lets `timeout_ms = 0` actually mean
+        // "single read, no sleep" once the iteration clamp gives us
+        // exactly one pass.
+        let mut iter = 0u32;
+        loop {
             // SAFETY: same address, read-only volatile.
             let still_in_progress = unsafe { dma::read(DMABUSMODE) } & bus_mode::SW_RESET != 0;
             if !still_in_progress {
                 return Ok(());
             }
+            iter += 1;
+            if iter >= max_iters {
+                return Err(ResetError::Timeout);
+            }
             self.delay.delay_us(RESET_POLL_INTERVAL_US);
         }
-        Err(ResetError::Timeout)
     }
 
     /// Configured timeout in milliseconds.
@@ -139,15 +150,24 @@ pub mod async_impl {
             // clears within microseconds.
             let max_iters = (u64::from(self.timeout_ms) * 1000 / u64::from(RESET_POLL_INTERVAL_US))
                 .clamp(1, u64::from(u32::MAX)) as u32;
-            for _ in 0..max_iters {
+            // Read-then-(maybe-)await loop: after the last read we
+            // return `Timeout` directly instead of yielding for a
+            // final poll interval we'd never check, so the actual
+            // wait stays ≤ `(max_iters - 1) * RESET_POLL_INTERVAL_US`
+            // and `timeout_ms = 0` means "single read, no yield".
+            let mut iter = 0u32;
+            loop {
                 // SAFETY: same address, read-only volatile.
                 let still_in_progress = unsafe { dma::read(DMABUSMODE) } & bus_mode::SW_RESET != 0;
                 if !still_in_progress {
                     return Ok(());
                 }
+                iter += 1;
+                if iter >= max_iters {
+                    return Err(ResetError::Timeout);
+                }
                 self.delay.delay_us(RESET_POLL_INTERVAL_US).await;
             }
-            Err(ResetError::Timeout)
         }
 
         /// Configured timeout in milliseconds.
