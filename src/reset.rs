@@ -65,12 +65,13 @@ impl<D: DelayNs> ResetController<D> {
         // SAFETY: DMABUSMODE is a known-valid 32-bit register.
         unsafe { dma::set_bits(DMABUSMODE, bus_mode::SW_RESET) };
 
-        // Compute in u64 then clamp to u32 so `timeout_ms` values past
-        // ~4.3 s (where `timeout_ms * 1000` would wrap a u32) still
-        // produce a sane upper bound on the polling loop. Force at
-        // least one iteration so a `timeout_ms = 0` caller still gets
-        // a single read (the soft-reset bit usually clears within a
-        // few microseconds — much faster than any meaningful timeout).
+        // Compute in u64 then clamp to u32 so very large `timeout_ms`
+        // values still produce a sane upper bound on the polling loop:
+        // `timeout_ms * 1000` would wrap a u32 once `timeout_ms`
+        // exceeds ~4.29 × 10⁶ ms (~71.6 minutes). Force at least one
+        // iteration so a `timeout_ms = 0` caller still gets a single
+        // read (the soft-reset bit usually clears within a few
+        // microseconds — much faster than any meaningful timeout).
         let max_iters = (u64::from(self.timeout_ms) * 1000 / u64::from(RESET_POLL_INTERVAL_US))
             .clamp(1, u64::from(u32::MAX)) as u32;
         for _ in 0..max_iters {
