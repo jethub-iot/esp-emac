@@ -4,19 +4,51 @@
 //! Native embassy-net driver for the ESP32 EMAC.
 //!
 //! Wraps [`crate::Emac`] directly (no `ph_esp32_mac::EmbassyEmac` proxy).
-//! [`EmacDriverState`] holds the wakers and link cache and is intended
-//! to live in `static` storage so the ISR can wake stack tasks.
+//! [`EmacDriverState`] holds the wakers, link cache, and ISR counters
+//! and is intended to live in `static` storage so the EMAC ISR can
+//! reach it.
 //!
 //! # Usage
 //!
+//! The driver is non-functional until the EMAC ISR services
+//! `DMASTATUS` and wakes the RX/TX tasks. The ISR body must call
+//! [`EmacDriverState::handle_emac_interrupt`] (or the lower-level
+//! pair [`crate::Emac::handle_interrupt`] +
+//! [`EmacDriverState::on_interrupt_status`]) — without that, RX and
+//! TX block forever in `Driver::receive` / `Driver::transmit` waiting
+//! on wakers that nothing pokes.
+//!
 //! ```ignore
-//! static mut EMAC: Emac<10, 10, 1600> = Emac::new(EmacConfig::default());
+//! use esp_emac::{
+//!     Emac, EmacConfig, RmiiClockConfig, RmiiPins, ClkGpio,
+//!     embassy::{EmacDriver, EmacDriverState},
+//! };
+//! use esp_hal::interrupt::{InterruptHandler, Priority};
+//!
+//! static mut EMAC: Emac<10, 10, 1600> = Emac::new(EmacConfig {
+//!     clock: RmiiClockConfig::InternalApll { gpio: ClkGpio::Gpio17 },
+//!     pins: RmiiPins { mdc: 23, mdio: 18 },
+//! });
 //! static EMAC_STATE: EmacDriverState = EmacDriverState::new();
 //!
-//! // After bringing the EMAC up:
-//! emac.bind_interrupt(emac_isr);
-//! emac.start().unwrap();
+//! // 1. ISR — must service DMASTATUS and wake stack tasks.
+//! #[esp_hal::handler(priority = Priority::Priority1)]
+//! fn emac_isr() {
+//!     EMAC_STATE.handle_emac_interrupt();
+//! }
+//!
+//! // 2. Bring-up + driver wiring.
+//! # fn example() -> Result<(), esp_emac::EmacError> {
+//! # let mut delay = esp_hal::delay::Delay::new();
+//! let emac = unsafe { &mut *core::ptr::addr_of_mut!(EMAC) };
+//! emac.set_mac_address([0x00, 0x70, 0x07, 0x24, 0x3B, 0x87]);
+//! emac.init(&mut delay)?;
+//! // ... PHY init + link wait + set_speed/set_duplex omitted ...
+//! emac.bind_interrupt(InterruptHandler::new(emac_isr, Priority::Priority1));
+//! emac.start()?;
 //! let driver = EmacDriver::new(emac, &EMAC_STATE);
+//! // Hand `driver` to embassy_net::new() / Stack.
+//! # Ok(()) }
 //! ```
 
 use core::cell::Cell;
@@ -284,6 +316,29 @@ pub struct EmacDriver<'d, const RX: usize, const TX: usize, const BUF: usize> {
     _marker: PhantomData<&'d mut Emac<RX, TX, BUF>>,
 }
 
+// SAFETY contract for `unsafe impl Send`:
+//
+// `EmacDriver` carries a `*mut Emac<...>` (raw pointers are not auto-Send),
+// but the manual impl is sound under the following invariants — break any
+// one of them and the impl becomes unsound, so revisit it together with
+// any change that touches `Emac`'s field layout or the ISR data path:
+//
+// 1. Single ownership. Exactly one `EmacDriver` exists per `Emac`
+//    instance for the lifetime of `'d`. `EmacDriver::new` consumes a
+//    `&'d mut Emac<...>`, which the borrow checker enforces as long
+//    as the pointer isn't laundered through other unsafe code.
+// 2. ISR-side access through `EmacDriverState` only touches MMIO
+//    (`DMASTATUS`) and `AtomicU32` counters — *not* the `Emac` struct
+//    behind the raw pointer. So the ISR is not a concurrent reader
+//    of the data the `Driver` impl mutates.
+// 3. No `!Send` field is added to `Emac<...>` or its transitive
+//    fields. The raw pointer hides auto-trait inference, so a future
+//    `Cell<X>`, `Rc<X>`, `MutexGuard<'_, X>` etc. inside `Emac` would
+//    silently leave this impl claiming `Send`.
+//
+// The crate's CI compiles the `embassy-net` feature, so a build break
+// inside `Emac` after such a refactor will surface — but the
+// soundness gap is the manual impl itself, not the build status.
 unsafe impl<const RX: usize, const TX: usize, const BUF: usize> Send
     for EmacDriver<'_, RX, TX, BUF>
 {
