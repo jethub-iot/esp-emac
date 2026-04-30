@@ -546,4 +546,62 @@ mod tests {
         static STATE: EmacDriverState = EmacDriverState::new();
         assert!(matches!(STATE.link_state(), LinkState::Down));
     }
+
+    // ── Driver wrapper (host-side static behaviour) ──────────────
+
+    fn test_emac() -> Emac<10, 10, 1600> {
+        use crate::config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
+
+        Emac::new(EmacConfig {
+            clock: RmiiClockConfig::InternalApll {
+                gpio: ClkGpio::Gpio17,
+                xtal: XtalFreq::Mhz40,
+            },
+            pins: RmiiPins { mdc: 23, mdio: 18 },
+        })
+    }
+
+    #[test]
+    fn driver_capabilities_advertise_mtu_and_burst() {
+        let mut emac = test_emac();
+        let state = EmacDriverState::new();
+        let driver = EmacDriver::new(&mut emac, &state);
+
+        let caps = driver.capabilities();
+        // `max_transmission_unit` is advertised to embassy-net so the
+        // stack can size its packet pool appropriately. Pinning the
+        // exact value here is intentional — bumping MTU should be a
+        // deliberate, reviewable change.
+        assert_eq!(caps.max_transmission_unit, MTU);
+        // Single-frame burst — the driver hands out one TX token at a
+        // time, so the stack should not pipeline more than one frame.
+        assert_eq!(caps.max_burst_size, Some(1));
+    }
+
+    #[test]
+    fn driver_hardware_address_reflects_cached_mac() {
+        let mut emac = test_emac();
+        // Before any `set_mac_address`, the cached value is the zero
+        // address — the bring-up code is expected to programme one
+        // before `init` reaches the address-filter step.
+        {
+            let state = EmacDriverState::new();
+            let driver = EmacDriver::new(&mut emac, &state);
+            let HardwareAddress::Ethernet(mac) = driver.hardware_address() else {
+                panic!("expected Ethernet hardware address");
+            };
+            assert_eq!(mac, [0u8; 6]);
+        }
+
+        // Cache a MAC; the driver should reflect it on the next read.
+        let custom = [0xF0, 0x57, 0x8D, 0x01, 0x04, 0xE3];
+        emac.set_mac_address(custom);
+
+        let state = EmacDriverState::new();
+        let driver = EmacDriver::new(&mut emac, &state);
+        let HardwareAddress::Ethernet(mac) = driver.hardware_address() else {
+            panic!("expected Ethernet hardware address");
+        };
+        assert_eq!(mac, custom);
+    }
 }
