@@ -347,16 +347,16 @@ pub struct EmacDriver<'d, const RX: usize, const TX: usize, const BUF: usize> {
 //    (`DMASTATUS`) and `AtomicU32` counters — *not* the `Emac` struct
 //    behind the raw pointer. So the ISR is not a concurrent reader
 //    of the data the `Driver` impl mutates.
-// 3. No `!Send` field is added to `Emac<...>` or its transitive
-//    fields. The raw pointer hides auto-trait inference, so a future
-//    `Cell<X>`, `Rc<X>`, `MutexGuard<'_, X>` etc. inside `Emac` would
-//    silently leave this impl claiming `Send`.
-//
-// The crate's CI compiles the `embassy-net` feature, so a build break
-// inside `Emac` after such a refactor will surface — but the
-// soundness gap is the manual impl itself, not the build status.
-unsafe impl<const RX: usize, const TX: usize, const BUF: usize> Send
-    for EmacDriver<'_, RX, TX, BUF>
+// 3. The pointee `Emac<RX, TX, BUF>` is itself `Send`. The raw pointer
+//    hides auto-trait inference, so without an explicit bound a
+//    future `Cell<X>` / `Rc<X>` / `MutexGuard<'_, X>` inside `Emac`
+//    would silently leave this impl claiming `Send`. The
+//    `where Emac<RX, TX, BUF>: Send` clause below promotes that
+//    invariant from documentation to a compile-time check: such a
+//    refactor will fail to compile here instead of producing
+//    unsound `EmacDriver: Send`.
+unsafe impl<const RX: usize, const TX: usize, const BUF: usize> Send for EmacDriver<'_, RX, TX, BUF> where
+    Emac<RX, TX, BUF>: Send
 {
 }
 
