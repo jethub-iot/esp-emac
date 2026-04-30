@@ -374,6 +374,11 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
 
         dma_regs::stop_rx();
         dma_regs::disable_all_interrupts();
+        // Acknowledge any W1C bits that latched in DMASTATUS while the
+        // engine was running, so a future `start()` doesn't observe
+        // stale flags through `last_dmastat` / `interrupt_status` and
+        // a re-enable from outside the driver doesn't fire spuriously.
+        dma_regs::clear_all_interrupts();
 
         self.state = EmacState::Initialized;
         Ok(())
