@@ -25,7 +25,13 @@ rustdoc-args   = ["--cfg", "docsrs"]
 embedded-hal       = "1.0"
 embedded-hal-async = { version = "1.0", optional = true }
 esp-hal            = { version = "1.0.0", features = ["esp32", "unstable"], optional = true }
-eth-mdio-phy       = { version = "0.1.0", path = "../eth-phy/crates/eth-mdio-phy", optional = true }
+# `eth-mdio-phy` is not yet on crates.io. Until then we pull it via a
+# git dependency so this crate builds standalone. When the firmware
+# super-repo (which carries both as submodules) builds against this
+# crate, it overrides the dep through a `[patch."https://github.com/jethub-iot/eth-phy-rs"]`
+# section in its workspace `Cargo.toml`, redirecting to the local
+# submodule. Once published, switch to `version = "0.1"`.
+eth-mdio-phy       = { git = "https://github.com/jethub-iot/eth-phy-rs.git", branch = "main", optional = true }
 embassy-net-driver = { version = "0.2", optional = true }
 embassy-sync       = { version = "0.7", optional = true }
 critical-section   = { version = "1.2", optional = true }
@@ -41,6 +47,12 @@ critical-section = { version = "1.2", features = ["std"] }
 # Bare-metal deps used only by `examples/embassy_net_lan8720a.rs`.
 # Gated to `target_os = "none"` so they are never resolved on the host
 # (where `cargo test` runs against $HOST_TARGET).
+#
+# `eth-phy-lan87xx` is pulled via a git dependency so that anyone who
+# clones this repository alone (without the JetHome firmware
+# super-repo) can `cargo build --example embassy_net_lan8720a` out of
+# the box. Once `eth-phy-lan87xx` is published to crates.io this
+# becomes a plain `version = "..."` dep.
 [target.'cfg(target_os = "none")'.dev-dependencies]
 embassy-executor = "0.9"
 embassy-net      = { version = "0.7", features = ["dhcpv4", "medium-ethernet"] }
@@ -49,7 +61,7 @@ esp-backtrace    = { version = "0.18.1", features = ["esp32", "panic-handler", "
 esp-println      = { version = "0.16.1", default-features = false, features = ["esp32", "uart"] }
 esp-rtos         = { version = "0.2.0", features = ["esp32", "embassy"] }
 esp-sync         = { version = "0.1.1", features = ["esp32"] }
-eth-phy-lan87xx  = { version = "0.1", path = "../eth-phy/crates/eth-phy-lan87xx" }
+eth-phy-lan87xx  = { git = "https://github.com/jethub-iot/eth-phy-rs.git", branch = "main" }
 static_cell      = "2"
 
 [[example]]

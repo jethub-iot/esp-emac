@@ -866,10 +866,12 @@ dependencies = [
 [[package]]
 name = "eth-mdio-phy"
 version = "0.1.0"
+source = "git+https://github.com/jethub-iot/eth-phy-rs.git?branch=main#87b19ad984ce4d623ea0cffebd691a551383e59c"
 
 [[package]]
 name = "eth-phy-lan87xx"
 version = "0.1.0"
+source = "git+https://github.com/jethub-iot/eth-phy-rs.git?branch=main#87b19ad984ce4d623ea0cffebd691a551383e59c"
 dependencies = [
  "embedded-hal 1.0.0",
  "eth-mdio-phy",

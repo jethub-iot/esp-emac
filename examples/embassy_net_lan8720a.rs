@@ -151,10 +151,14 @@ async fn main(spawner: Spawner) {
 
 async fn wait_for_ip(stack: Stack<'static>) {
     loop {
-        if let Some(_cfg) = stack.config_v4() {
-            // got IP: _cfg.address (Ipv4Cidr)
-            //         _cfg.gateway (Option<Ipv4Address>)
-            //         _cfg.dns_servers (Vec<Ipv4Address>)
+        if let Some(cfg) = stack.config_v4() {
+            esp_println::println!("[net] got IP: {}", cfg.address);
+            if let Some(gw) = cfg.gateway {
+                esp_println::println!("[net] gateway: {}", gw);
+            }
+            for dns in cfg.dns_servers.as_slice() {
+                esp_println::println!("[net] dns: {}", dns);
+            }
             return;
         }
         Timer::after(Duration::from_millis(500)).await;

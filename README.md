@@ -1,15 +1,14 @@
 # esp-emac
 
 [![License: GPL-2.0-or-later OR Apache-2.0](https://img.shields.io/badge/license-GPL--2.0--or--later%20OR%20Apache--2.0-blue.svg)](#license)
-[![Crates.io](https://img.shields.io/crates/v/esp-emac.svg)](https://crates.io/crates/esp-emac)
-[![Documentation](https://docs.rs/esp-emac/badge.svg)](https://docs.rs/esp-emac)
+[![Status: WIP](https://img.shields.io/badge/status-WIP-orange.svg)](#installation) — not yet on crates.io / docs.rs
 
 Native ESP32 Ethernet MAC driver for `#![no_std]` Rust. Owns the DMA
 engine and brings the EMAC peripheral up directly via memory-mapped
 register helpers — no `ph-esp32-mac`, no `esp-idf-svc`, no `esp-eth`.
 
-Pairs with [`eth-phy-lan87xx`](https://crates.io/crates/eth-phy-lan87xx)
-(or any [`eth-mdio-phy::PhyDriver`](https://crates.io/crates/eth-mdio-phy)
+Pairs with [`eth-phy-lan87xx`](https://github.com/jethub-iot/eth-phy-rs)
+(or any [`eth-mdio-phy::PhyDriver`](https://github.com/jethub-iot/eth-phy-rs)
 implementation) for the PHY side, and with `embassy-net` for the
 TCP/IP stack.
 
@@ -17,13 +16,22 @@ TCP/IP stack.
 
 ## Installation
 
-Add to `Cargo.toml`:
+The crate is **not yet published to crates.io.** Add it (and the
+companion PHY workspace) as git submodules and reference them via
+local paths in your `Cargo.toml`. Once published, the recommended
+path is going to be a plain `version = "..."` registry dependency.
+
+```sh
+git submodule add https://github.com/jethub-iot/esp-emac-rs.git vendor/esp-emac
+git submodule add https://github.com/jethub-iot/eth-phy-rs.git   vendor/eth-phy
+git submodule update --init --recursive
+```
 
 ```toml
 [dependencies]
-esp-emac = { version = "0.1", features = ["esp-hal", "mdio-phy", "embassy-net"] }
-eth-phy-lan87xx = "0.1"   # or any other eth-mdio-phy::PhyDriver impl
-eth-mdio-phy    = "0.1"
+esp-emac        = { path = "vendor/esp-emac",                          features = ["esp-hal", "mdio-phy", "embassy-net"] }
+eth-mdio-phy    = { path = "vendor/eth-phy/crates/eth-mdio-phy" }
+eth-phy-lan87xx = { path = "vendor/eth-phy/crates/eth-phy-lan87xx" }   # or any other eth-mdio-phy::PhyDriver impl
 
 # Required runtime stack
 esp-hal           = { version = "1.0", features = ["esp32", "unstable"] }
@@ -74,6 +82,8 @@ The skeleton looks like this:
 #![no_std]
 #![no_main]
 
+use esp_backtrace as _; // installs the `#[panic_handler]`
+
 use embassy_executor::Spawner;
 use embassy_net::{DhcpConfig, Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer};
@@ -110,11 +120,17 @@ async fn net_task(mut runner: Runner<'static, EmacDriver<'static, 10, 10, 1600>>
     runner.run().await
 }
 
-#[esp_hal::main]
+#[esp_rtos::main]
 async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
+
+    // esp-rtos owns the embassy timer + scheduler. Start it before any
+    // `Timer::after(...)` or `spawner.spawn(...)` can fire.
+    let timg0 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
+    esp_rtos::start(timg0.timer0);
+
     let mut delay = Delay::new();
-    let rng = Rng::new(peripherals.RNG);
+    let rng = Rng::new();
 
     // 3. Bring up MAC + PHY.
     // SAFETY: EMAC is touched only here at init time.
@@ -190,7 +206,7 @@ need to line up:
 1. **A `static EMAC_STATE: EmacDriverState`.** Holds the `WAKER` the
    driver polls and the `link_up` flag. Created with
    `EmacDriverState::new()` and never moved.
-2. **A handler attribute'd with `#[esp_hal::handler]`** that calls
+2. **A handler annotated with `#[esp_hal::handler]`** that calls
    `EMAC_STATE.handle_emac_interrupt()`. Use `Priority::Priority1` —
    the driver does not gate on priority, but level 1 keeps it well below
    timer/scheduler interrupts.
