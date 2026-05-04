@@ -24,7 +24,7 @@ rustdoc-args   = ["--cfg", "docsrs"]
 [dependencies]
 embedded-hal       = "1.0"
 embedded-hal-async = { version = "1.0", optional = true }
-esp-hal            = { version = "1.0.0", features = ["esp32", "unstable"], optional = true }
+esp-hal            = { version = "1.1.0-rc.0", features = ["esp32", "unstable"], optional = true }
 # `eth-mdio-phy` is not yet on crates.io. The `path` dep resolves
 # locally when this crate is consumed as a sibling of `eth-phy-rs`
 # (the JetHome firmware super-repo and the recommended submodule
