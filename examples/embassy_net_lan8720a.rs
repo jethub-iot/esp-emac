@@ -97,34 +97,31 @@ async fn main(spawner: Spawner) {
     let mut phy = PhyLan87xx::new(PHY_ADDR);
     phy.init(&mut mdio).expect("PHY init");
 
-    // Wait up to ~10 s for link, then programme the negotiated speed.
-    let mut elapsed_ms = 0u32;
+    // Block until the PHY reports link up. `EmacDriver` only delivers
+    // frames to embassy-net when `EMAC_STATE.link_up == true`, so DHCP
+    // cannot complete before this point regardless of cable state. A
+    // production firmware would spawn a background task to poll
+    // `phy.poll_link` periodically and call
+    // `EMAC_STATE.set_link_up() / set_link_down()` on transitions; this
+    // example keeps things linear for clarity.
     let status = loop {
         match phy.poll_link(&mut mdio) {
-            Ok(Some(s)) => break Some(s),
+            Ok(Some(s)) => break s,
             Ok(None) => {}
             Err(_) => {} // transient MDIO read errors at very early boot
         }
-        if elapsed_ms >= 10_000 {
-            break None;
-        }
         delay.delay_ms(200);
-        elapsed_ms += 200;
     };
 
-    if let Some(status) = status {
-        emac.set_speed(match status.speed {
-            PhySpeed::Mbps10 => EmacSpeed::Mbps10,
-            PhySpeed::Mbps100 => EmacSpeed::Mbps100,
-        });
-        emac.set_duplex(match status.duplex {
-            PhyDuplex::Half => EmacDuplex::Half,
-            PhyDuplex::Full => EmacDuplex::Full,
-        });
-        EMAC_STATE.set_link_up();
-    }
-    // If link never came up we still continue — embassy-net retries
-    // forever once the cable is plugged in.
+    emac.set_speed(match status.speed {
+        PhySpeed::Mbps10 => EmacSpeed::Mbps10,
+        PhySpeed::Mbps100 => EmacSpeed::Mbps100,
+    });
+    emac.set_duplex(match status.duplex {
+        PhyDuplex::Half => EmacDuplex::Half,
+        PhyDuplex::Full => EmacDuplex::Full,
+    });
+    EMAC_STATE.set_link_up();
 
     emac.start().expect("EMAC start");
 
