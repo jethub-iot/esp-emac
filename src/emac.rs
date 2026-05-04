@@ -535,11 +535,33 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
 // GPIOs. Callers must construct an explicit `EmacConfig` — see the
 // crate-level docs and `RmiiClockConfig` for the available modes.
 
-/// Convenience alias: 10 RX / 10 TX / 1600-byte buffers.
-pub type EmacDefault = Emac<10, 10, 1600>;
+// ── Default ring sizings ──────────────────────────────────────────────
+//
+// Single source of truth for the const generics that parameterize the
+// `EmacDefault` / `EmacSmall` aliases on the MAC side and the matching
+// `EmacDefaultDriver` / `EmacSmallDriver` aliases in `embassy.rs`. Keep
+// the driver aliases pulled from these constants — retuning a value
+// here updates both alias families together.
 
-/// Convenience alias: 4 RX / 4 TX / 1600-byte buffers.
-pub type EmacSmall = Emac<4, 4, 1600>;
+/// RX descriptor ring size for [`EmacDefault`].
+pub const DEFAULT_RX: usize = 10;
+/// TX descriptor ring size for [`EmacDefault`].
+pub const DEFAULT_TX: usize = 10;
+/// Per-buffer length (bytes) for [`EmacDefault`] / [`EmacSmall`].
+pub const DEFAULT_BUF: usize = 1600;
+
+/// RX descriptor ring size for [`EmacSmall`].
+pub const SMALL_RX: usize = 4;
+/// TX descriptor ring size for [`EmacSmall`].
+pub const SMALL_TX: usize = 4;
+
+/// Convenience alias: [`DEFAULT_RX`] RX / [`DEFAULT_TX`] TX /
+/// [`DEFAULT_BUF`]-byte buffers (10/10/1600).
+pub type EmacDefault = Emac<DEFAULT_RX, DEFAULT_TX, DEFAULT_BUF>;
+
+/// Convenience alias: [`SMALL_RX`] RX / [`SMALL_TX`] TX /
+/// [`DEFAULT_BUF`]-byte buffers (4/4/1600).
+pub type EmacSmall = Emac<SMALL_RX, SMALL_TX, DEFAULT_BUF>;
 
 // =============================================================================
 // Helpers

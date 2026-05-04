@@ -180,8 +180,10 @@ async fn main(spawner: Spawner) {
 
     emac.start().expect("EMAC start");
 
-    // 5. Plumb into embassy-net.
-    let driver = EmacDriver::new(emac, &EMAC_STATE);
+    // 5. Plumb into embassy-net. `EmacDefaultDriver` is a type alias
+    //    whose inherent `new` is `EmacDriver::new` — keeps the call
+    //    site free of the `<10, 10, 1600>` ceremony.
+    let driver = EmacDefaultDriver::new(emac, &EMAC_STATE);
     let net_seed = rng.random() as u64 | ((rng.random() as u64) << 32);
 
     static RESOURCES: static_cell::StaticCell<StackResources<8>> =

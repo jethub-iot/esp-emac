@@ -8,23 +8,31 @@
 //! and is intended to live in `static` storage so the EMAC ISR can
 //! reach it.
 //!
-//! # Singleton design
+//! # Lifetime alignment
 //!
-//! Both [`Emac`] and [`EmacDriverState`] are designed as **per-process
-//! singletons**:
+//! [`Emac`] and [`EmacDriverState`] play different roles, with
+//! different uniqueness requirements:
 //!
-//! - The ESP32 has exactly one built-in EMAC peripheral; `Emac::init`
-//!   touches global MMIO that no second instance could share. Two
-//!   `Emac` instances would compile but step on each other at runtime.
-//! - `EmacDriverState` is referenced from the EMAC ISR symbol bound
-//!   via [`crate::Emac::bind_interrupt`]. The ISR has no per-instance
-//!   context — it dereferences a `static` symbol — so introducing a
-//!   second `EmacDriverState` instance would silently route interrupts
-//!   to the wrong one.
+//! - [`Emac`] drives a single hardware peripheral. The ESP32 has
+//!   exactly one built-in EMAC and `Emac::init` touches global MMIO,
+//!   so at most one initialized `Emac` instance can be active on a
+//!   running device. Construct it once and place it in `static`
+//!   storage (typically through a [`static_cell::StaticCell`]).
+//! - [`EmacDriverState`] is **not** a strict singleton. Multiple
+//!   instances are fine — host-side tests construct one per test, and
+//!   sequential re-initialization with a fresh state on the same
+//!   peripheral is allowed. The constraint is alignment: the
+//!   `EmacDriverState` whose [`handle_emac_interrupt`] runs from the
+//!   ISR must be the same instance you pass to [`EmacDriver::new`]
+//!   alongside the `Emac`. If those two references disagree, RX/TX
+//!   wakers fire against the wrong state and the stack stalls.
 //!
-//! Place both in `static` storage. Construct exactly one
-//! [`EmacDriver`] per `Emac` (the borrow checker enforces single
-//! ownership through `&'d mut Emac<...>`).
+//! [`EmacDriver`] then ties the pair together. The borrow checker
+//! enforces single ownership through `&'d mut Emac<...>`, so as long
+//! as the `Emac` lives in `static` storage you can hand its
+//! `&'static mut` to exactly one driver.
+//!
+//! [`handle_emac_interrupt`]: EmacDriverState::handle_emac_interrupt
 //!
 //! # Usage
 //!
@@ -52,7 +60,9 @@
 //! static EMAC: StaticCell<EmacDefault> = StaticCell::new();
 //! static EMAC_STATE: EmacDriverState = EmacDriverState::new();
 //!
-//! // 1. ISR — must service DMASTATUS and wake stack tasks.
+//! // 1. ISR — must service DMASTATUS and wake stack tasks. The
+//! //    `EMAC_STATE` it touches has to be the same instance the
+//! //    driver is paired with below.
 //! #[esp_hal::handler(priority = Priority::Priority1)]
 //! fn emac_isr() {
 //!     EMAC_STATE.handle_emac_interrupt();
@@ -73,7 +83,10 @@
 //! // ... PHY init + link wait + set_speed/set_duplex omitted ...
 //! emac.bind_interrupt(InterruptHandler::new(emac_isr, Priority::Priority1));
 //! emac.start()?;
-//! let driver: EmacDefaultDriver<'_> = EmacDriver::new(emac, &EMAC_STATE);
+//! // `EmacDefaultDriver` is a type alias whose inherent `new` is the
+//! // same `EmacDriver::new` constructor — keeps the call site free of
+//! // the `<10, 10, 1600>` ceremony.
+//! let driver = EmacDefaultDriver::new(emac, &EMAC_STATE);
 //! // Hand `driver` to embassy_net::new() / Stack.
 //! # Ok(()) }
 //! ```
@@ -89,7 +102,7 @@ use embassy_net_driver::{
 };
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::emac::Emac;
+use crate::emac::{Emac, DEFAULT_BUF, DEFAULT_RX, DEFAULT_TX, SMALL_RX, SMALL_TX};
 use crate::interrupt::InterruptStatus;
 
 /// Diagnostic snapshot of the `Driver::receive` / `Driver::transmit`
@@ -350,7 +363,7 @@ impl EmacDriverState {
 /// The driver holds a raw pointer to a previously-initialized
 /// [`Emac`] together with a reference to a shared [`EmacDriverState`].
 ///
-/// # Singleton
+/// # Single ownership
 ///
 /// Construct **exactly one** `EmacDriver` per `Emac`. The borrow
 /// checker enforces that through the `&'d mut Emac<...>` argument to
@@ -359,8 +372,11 @@ impl EmacDriverState {
 /// initialized once), the `&'static mut` returned by `StaticCell::init`
 /// is only handed to one driver and aliasing is impossible.
 ///
-/// The companion [`EmacDriverState`] is also a singleton — see the
-/// module-level docs for why.
+/// The companion [`EmacDriverState`] is **not** a strict singleton —
+/// see the module-level *Lifetime alignment* section. The constraint
+/// is that whichever instance the EMAC ISR's
+/// [`EmacDriverState::handle_emac_interrupt`] runs against must be
+/// the same one passed here as `state`.
 ///
 /// For the default `Emac<10, 10, 1600>` ring sizing the
 /// [`EmacDefaultDriver<'d>`](EmacDefaultDriver) alias removes the need
@@ -450,19 +466,20 @@ impl<'d, const RX: usize, const TX: usize, const BUF: usize> EmacDriver<'d, RX, 
 // Convenience type aliases
 // =============================================================================
 
-/// Driver for the default `Emac<10, 10, 1600>` ring sizing.
+/// Driver for the [`crate::EmacDefault`] ring sizing.
 ///
-/// Pairs with [`crate::EmacDefault`] so the user only spells out the
-/// const-generic configuration in one place. The `embassy_executor::task`
+/// Sourced from the same `DEFAULT_RX` / `DEFAULT_TX` / `DEFAULT_BUF`
+/// constants as `EmacDefault`, so the two aliases stay paired even if
+/// the canonical sizing is retuned. The `embassy_executor::task`
 /// signature for the `net_task` runner can then read
 /// `Runner<'static, EmacDefaultDriver<'static>>` instead of repeating
 /// `Runner<'static, EmacDriver<'static, 10, 10, 1600>>`.
-pub type EmacDefaultDriver<'d> = EmacDriver<'d, 10, 10, 1600>;
+pub type EmacDefaultDriver<'d> = EmacDriver<'d, DEFAULT_RX, DEFAULT_TX, DEFAULT_BUF>;
 
-/// Driver for the small `Emac<4, 4, 1600>` ring sizing.
+/// Driver for the [`crate::EmacSmall`] ring sizing.
 ///
 /// See [`EmacDefaultDriver`] for the rationale.
-pub type EmacSmallDriver<'d> = EmacDriver<'d, 4, 4, 1600>;
+pub type EmacSmallDriver<'d> = EmacDriver<'d, SMALL_RX, SMALL_TX, DEFAULT_BUF>;
 
 // =============================================================================
 // RX / TX tokens

@@ -33,7 +33,7 @@ use esp_hal::{delay::Delay, interrupt::Priority, rng::Rng};
 
 use esp_emac::config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
 use esp_emac::emac::{Duplex as EmacDuplex, Speed as EmacSpeed};
-use esp_emac::embassy::{EmacDefaultDriver, EmacDriver, EmacDriverState};
+use esp_emac::embassy::{EmacDefaultDriver, EmacDriverState};
 use esp_emac::mdio::EspMdio;
 use esp_emac::EmacDefault;
 
@@ -126,7 +126,10 @@ async fn main(spawner: Spawner) {
 
     emac.start().expect("EMAC start");
 
-    let driver = EmacDriver::new(emac, &EMAC_STATE);
+    // `EmacDefaultDriver` is the type alias for `EmacDriver<'_, 10, 10,
+    // 1600>` — its inherent `new` is the same constructor, just without
+    // having to spell out the const generics again at the call site.
+    let driver = EmacDefaultDriver::new(emac, &EMAC_STATE);
     let net_seed = rng.random() as u64 | ((rng.random() as u64) << 32);
 
     static RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();

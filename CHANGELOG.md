@@ -9,11 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `embassy::EmacDefaultDriver<'d>` and `embassy::EmacSmallDriver<'d>`
-  type aliases for the `Emac<10, 10, 1600>` and `Emac<4, 4, 1600>`
-  ring sizings — pair with the existing `EmacDefault` / `EmacSmall`
-  aliases so users only spell out the const generics in one place.
-  In particular `embassy_executor::task` signatures collapse from
+- `pub const DEFAULT_RX = 10`, `DEFAULT_TX = 10`, `DEFAULT_BUF = 1600`,
+  `SMALL_RX = 4`, `SMALL_TX = 4` in `src/emac.rs` — single source of
+  truth for the canonical ring sizings.
+- `EmacDefault` / `EmacSmall` (MAC side) and the new
+  `embassy::EmacDefaultDriver<'d>` / `embassy::EmacSmallDriver<'d>`
+  driver-side aliases are all expressed in terms of those constants,
+  so retuning a sizing updates all four aliases together. The driver
+  aliases collapse `embassy_executor::task` signatures from
   `Runner<'static, EmacDriver<'static, 10, 10, 1600>>` to
   `Runner<'static, EmacDefaultDriver<'static>>`.
 
@@ -26,11 +29,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `static EMAC: StaticCell<EmacDefault> = StaticCell::new();` +
   `EMAC.init(EmacDefault::new(...))` pattern. No `static mut` and no
   `unsafe` block in the user-facing example.
-- New "Singleton design" section in `src/embassy.rs` explaining why
-  both `Emac` and `EmacDriverState` are designed as per-process
-  singletons (one EMAC peripheral on the chip, ISR symbol points at a
-  single `static`), with a stronger doc-comment on `EmacDriver`
-  capturing the same constraint.
+- Driver construction sites use `EmacDefaultDriver::new(emac, &state)`
+  (the type alias's inherent `new`) instead of `EmacDriver::new(...)`,
+  so the call site doesn't repeat the const generics.
+- New "Lifetime alignment" section in `src/embassy.rs` accurately
+  describing the constraints: `Emac` is a hardware-peripheral
+  singleton (one EMAC on the ESP32, global MMIO), but
+  `EmacDriverState` is **not** strictly singleton — multiple
+  instances are fine for tests / sequential re-init; the constraint
+  is that the ISR-bound instance must match the one passed to
+  `EmacDriver::new`. Replaces the previous, overstated "per-process
+  singleton" wording.
+
+### Internal
+
+- `static_cell = "2"` added to host dev-dependencies (`cfg(not(target_os
+  = "none"))`) so `cargo test --doc --features embassy-net` resolves
+  the `StaticCell` import in the lib.rs doctest. Pure-Rust crate, no
+  transitive cost.
 
 ### Notes
 
