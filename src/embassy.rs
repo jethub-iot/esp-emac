@@ -16,8 +16,13 @@
 //! - [`Emac`] drives a single hardware peripheral. The ESP32 has
 //!   exactly one built-in EMAC and `Emac::init` touches global MMIO,
 //!   so at most one initialized `Emac` instance can be active on a
-//!   running device. Construct it once and place it in `static`
-//!   storage (typically through a [`static_cell::StaticCell`]).
+//!   running device. Place it in `static mut` storage and take the
+//!   `&'static mut` once at bring-up via
+//!   `unsafe { &mut *core::ptr::addr_of_mut!(EMAC) }`. `Emac::new`
+//!   is a `const fn`, so the value lives in BSS — no runtime stack
+//!   temporary, deterministic on cold boot. (See the *Usage* section
+//!   below for why a `StaticCell::init(EmacDefault::new(..))`
+//!   wrapper is *not* recommended at the default ring sizing.)
 //! - [`EmacDriverState`] is **not** a strict singleton. Multiple
 //!   instances are fine — host-side tests construct one per test, and
 //!   sequential re-initialization with a fresh state on the same
