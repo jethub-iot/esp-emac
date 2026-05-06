@@ -25,13 +25,14 @@ rustdoc-args   = ["--cfg", "docsrs"]
 embedded-hal       = "1.0"
 embedded-hal-async = { version = "1.0", optional = true }
 esp-hal            = { version = "1.0.0", features = ["esp32", "unstable"], optional = true }
-# `eth-mdio-phy` is not yet on crates.io. The `path` dep resolves
-# locally when this crate is consumed as a sibling of `eth-phy-rs`
-# (the JetHome firmware super-repo and the recommended submodule
-# layout — see README "Pre-publication" note). The `version = "0.1.0"`
-# tag is what cargo emits to the registry once the crate publishes;
-# at that point the `path` field is stripped automatically.
-eth-mdio-phy       = { version = "0.1.0", path = "../eth-phy/crates/eth-mdio-phy", optional = true }
+# `eth-mdio-phy` ships in the sibling eth-phy-rs workspace. The
+# `path` dep resolves locally when this crate is consumed alongside
+# eth-phy-rs (the JetHome firmware super-repo's recommended layout).
+# The `version` field is what cargo emits to the registry once the
+# crate publishes — kept in lockstep with the actual eth-mdio-phy
+# version this driver is tested against, so registry consumers don't
+# accidentally pick up an older patch via `^0.1.0` caret resolution.
+eth-mdio-phy       = { version = "0.1.1", path = "../eth-phy/crates/eth-mdio-phy", optional = true }
 embassy-net-driver = { version = "0.2", optional = true }
 embassy-sync       = { version = "0.7", optional = true }
 critical-section   = { version = "1.2", optional = true }
