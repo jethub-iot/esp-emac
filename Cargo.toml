@@ -31,7 +31,7 @@ rustdoc-args   = ["--cfg", "docsrs"]
 [dependencies]
 embedded-hal       = "1.0"
 embedded-hal-async = { version = "1.0", optional = true }
-esp-hal            = { version = "1.0.0", features = ["esp32", "unstable"], optional = true }
+esp-hal            = { version = "1.1.0", features = ["esp32", "unstable"], optional = true }
 # `eth-mdio-phy` ships in the sibling eth-phy-rs workspace. The
 # `path` dep resolves locally when this crate is consumed alongside
 # eth-phy-rs (the JetHome firmware super-repo's recommended layout).
@@ -41,7 +41,7 @@ esp-hal            = { version = "1.0.0", features = ["esp32", "unstable"], opti
 # accidentally pick up an older patch via `^0.1.0` caret resolution.
 eth-mdio-phy       = { version = "0.1.1", path = "../eth-phy/crates/eth-mdio-phy", optional = true }
 embassy-net-driver = { version = "0.2", optional = true }
-embassy-sync       = { version = "0.7", optional = true }
+embassy-sync       = { version = "0.8", optional = true }
 critical-section   = { version = "1.2", optional = true }
 defmt              = { version = "0.3", optional = true }
 
@@ -62,13 +62,13 @@ critical-section = { version = "1.2", features = ["std"] }
 # the example's docstring). Once published to crates.io this becomes
 # a plain `version = "..."` dep.
 [target.'cfg(target_os = "none")'.dev-dependencies]
-embassy-executor = "0.9"
-embassy-net      = { version = "0.7", features = ["dhcpv4", "medium-ethernet"] }
+embassy-executor = "0.10"
+embassy-net      = { version = "0.9", features = ["dhcpv4", "medium-ethernet"] }
 embassy-time     = "0.5"
-esp-backtrace    = { version = "0.18.1", features = ["esp32", "panic-handler", "println"] }
-esp-println      = { version = "0.16.1", default-features = false, features = ["esp32", "uart"] }
-esp-rtos         = { version = "0.2.0", features = ["esp32", "embassy"] }
-esp-sync         = { version = "0.1.1", features = ["esp32"] }
+esp-backtrace    = { version = "0.19.0", features = ["esp32", "panic-handler", "println"] }
+esp-println      = { version = "0.17.0", default-features = false, features = ["esp32", "uart"] }
+esp-rtos         = { version = "0.3.0", features = ["esp32", "embassy"] }
+esp-sync         = { version = "0.2.1", features = ["esp32"] }
 eth-phy-lan87xx  = { version = "0.1", path = "../eth-phy/crates/eth-phy-lan87xx" }
 static_cell      = "2"
 
