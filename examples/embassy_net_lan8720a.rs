@@ -28,7 +28,6 @@ use esp_backtrace as _; // installs the `#[panic_handler]`
 use embassy_executor::Spawner;
 use embassy_net::{DhcpConfig, Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer};
-use embedded_hal::delay::DelayNs;
 use esp_hal::{delay::Delay, interrupt::Priority, rng::Rng};
 
 use esp_emac::config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
@@ -116,7 +115,7 @@ async fn main(spawner: Spawner) {
             Ok(None) => {}
             Err(_) => {} // transient MDIO read errors at very early boot
         }
-        delay.delay_ms(200);
+        delay.delay_millis(200);
     };
 
     // `Speed` / `Duplex` are re-exports of the trait-crate types

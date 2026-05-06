@@ -45,7 +45,10 @@ pub enum EmacError {
     /// MAC/DMA are quiesced — but at least one in-flight TX frame may
     /// have been truncated on the wire. The caller decides whether
     /// to treat this as a recoverable warning (sample, log,
-    /// `start()` again) or as terminal (full re-init).
+    /// `start()` again — the engine is ready) or as terminal: there
+    /// is no in-crate "re-init" path because [`crate::Emac::init`] is
+    /// one-shot, so a hard recovery means a peripheral / SoC reset
+    /// from the application layer.
     TxFlushTimeout,
 }
 

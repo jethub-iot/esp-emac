@@ -350,9 +350,11 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
     /// - `Err(EmacError::TxFlushTimeout)` when the FTF poll exhausted
     ///   `TX_FIFO_FLUSH_TIMEOUT_US`. Teardown still completed — at
     ///   least one in-flight TX frame may have been truncated on the
-    ///   wire. The caller decides whether to treat as recoverable
-    ///   (`stop()` ignored, just `start()` again) or terminal (full
-    ///   `init()` cycle). `state` is `Initialized` either way.
+    ///   wire. `state` is `Initialized` either way, so a follow-up
+    ///   `start()` is the recoverable path. There is no in-crate
+    ///   "full re-init" — [`Emac::init`] is one-shot — so a terminal
+    ///   recovery means a peripheral or SoC reset from the
+    ///   application layer.
     /// - `Err(EmacError::NotInitialized)` if called from `Uninitialized`.
     ///
     /// Idempotent on an already-stopped driver: calling `stop` while

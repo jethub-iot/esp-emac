@@ -55,13 +55,23 @@
 //! Recovery sequence in the respawned task:
 //!
 //! ```ignore
+//! use esp_hal::delay::Delay;
+//!
 //! // Reborrow — same EMAC, still post-init from prior run.
 //! let emac = unsafe { &mut *core::ptr::addr_of_mut!(EMAC) };
-//! // Tear down the running engine and clear DMA state. `stop()` is
-//! // idempotent; calling it on a not-Running EMAC also returns Ok(()).
-//! let _ = emac.stop();
-//! // Restart fresh. The peripheral keeps its already-programmed pins,
-//! // clocks, and MAC address — only the DMA rings need to come back up.
+//! // Tear down the running engine and clear DMA state. `stop()`
+//! // takes a `&mut impl DelayNs` for the TX-FIFO flush poll.
+//! // It is idempotent on `Initialized` (returns Ok(())) and rejects
+//! // an `Uninitialized` driver with `EmacError::NotInitialized` —
+//! // neither matters here because the prior task left the EMAC in
+//! // `Running`. `Err(EmacError::TxFlushTimeout)` means teardown
+//! // still completed (state is back at `Initialized`); the warning
+//! // is recoverable, so swallow it.
+//! let mut delay = Delay::new();
+//! let _ = emac.stop(&mut delay);
+//! // Restart fresh. The peripheral keeps its already-programmed
+//! // pins, clocks, and MAC address — only the DMA rings need to
+//! // come back up.
 //! emac.start()?;
 //! ```
 //!
