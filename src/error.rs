@@ -39,6 +39,14 @@ pub enum EmacError {
     NotInitialized,
     /// `init()` was called twice.
     AlreadyInitialized,
+    /// `stop()` could not flush the TX FIFO within
+    /// `TX_FIFO_FLUSH_TIMEOUT_US`. Teardown still proceeded — the
+    /// driver state is back to [`crate::EmacState::Initialized`] and
+    /// MAC/DMA are quiesced — but at least one in-flight TX frame may
+    /// have been truncated on the wire. The caller decides whether
+    /// to treat this as a recoverable warning (sample, log,
+    /// `start()` again) or as terminal (full re-init).
+    TxFlushTimeout,
 }
 
 impl From<crate::reset::ResetError> for EmacError {

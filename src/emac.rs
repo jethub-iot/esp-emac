@@ -339,13 +339,24 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
     ///
     /// Polls the TX-FIFO flush bit (`FTF`) for up to
     /// `TX_FIFO_FLUSH_TIMEOUT_US` microseconds, sleeping `delay` between
-    /// polls so the DMA actually has time to drain. If the timeout
-    /// expires the function still tears the rest of the path down —
-    /// driver state ends up in `Initialized` either way.
+    /// polls so the DMA actually has time to drain. The rest of the
+    /// teardown (MAC RX/TX disable, DMA RX stop, interrupt-status
+    /// clear, state transition to `Initialized`) runs unconditionally
+    /// — even on flush timeout the driver winds up in `Initialized`
+    /// and is safe to re-`start()`.
     ///
-    /// Idempotent on an already-stopped driver: calling `stop` while in
-    /// `Initialized` returns `Ok(())` without touching hardware. Only
-    /// `Uninitialized` is rejected with `EmacError::NotInitialized`.
+    /// Returns:
+    /// - `Ok(())` on a clean teardown (FTF self-cleared in time).
+    /// - `Err(EmacError::TxFlushTimeout)` when the FTF poll exhausted
+    ///   `TX_FIFO_FLUSH_TIMEOUT_US`. Teardown still completed — at
+    ///   least one in-flight TX frame may have been truncated on the
+    ///   wire. The caller decides whether to treat as recoverable
+    ///   (`stop()` ignored, just `start()` again) or terminal (full
+    ///   `init()` cycle). `state` is `Initialized` either way.
+    /// - `Err(EmacError::NotInitialized)` if called from `Uninitialized`.
+    ///
+    /// Idempotent on an already-stopped driver: calling `stop` while
+    /// in `Initialized` returns `Ok(())` without touching hardware.
     pub fn stop(&mut self, delay: &mut impl DelayNs) -> Result<(), EmacError> {
         match self.state {
             EmacState::Running => {} // proceed with the tear-down below
@@ -360,8 +371,10 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         dma_regs::flush_tx_fifo();
         const POLL_STEP_US: u32 = 10;
         let mut waited_us = 0u32;
+        let mut flush_timed_out = true;
         while waited_us < TX_FIFO_FLUSH_TIMEOUT_US {
             if (dma_regs::operation_mode() & operation::FTF) == 0 {
+                flush_timed_out = false;
                 break;
             }
             delay.delay_us(POLL_STEP_US);
@@ -381,7 +394,12 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
         dma_regs::clear_all_interrupts();
 
         self.state = EmacState::Initialized;
-        Ok(())
+
+        if flush_timed_out {
+            Err(EmacError::TxFlushTimeout)
+        } else {
+            Ok(())
+        }
     }
 
     // ── Frame I/O ─────────────────────────────────────────────────────────
