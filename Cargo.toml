@@ -13,12 +13,19 @@ keywords      = ["embedded", "no-std", "esp32", "ethernet", "emac"]
 categories    = ["embedded", "no-std", "hardware-support"]
 
 [package.metadata.docs.rs]
-# docs.rs builds need the Xtensa target so esp-hal compiles. The
-# nightly flag is required because esp-hal pulls in nightly-only
-# `core` features.
-default-target = "xtensa-esp32-none-elf"
+# docs.rs does NOT carry the Microchip xtensa fork of rustc, so a
+# `default-target = "xtensa-esp32-none-elf"` build fails outright
+# with "can't find crate for `core`". Match the convention used by
+# `esp-hal` itself and every other esp-rs crate: render the docs
+# under a RISC-V target (rustc upstream supports it natively) and
+# leave the `esp-hal` feature off so that target_arch-locked code
+# paths don't pull in xtensa-only register peripherals. The
+# remaining surface — trait impls, `MdioBus`, `Speed`/`Duplex`
+# re-exports, `regs/*` register arithmetic, the public error and
+# state enums — covers what most readers come to docs.rs to find.
+default-target = "riscv32imc-unknown-none-elf"
 targets        = []
-features       = ["esp-hal", "mdio-phy", "embassy-net", "async", "defmt"]
+features       = ["mdio-phy", "embassy-net", "async", "defmt"]
 rustdoc-args   = ["--cfg", "docsrs"]
 
 [dependencies]
