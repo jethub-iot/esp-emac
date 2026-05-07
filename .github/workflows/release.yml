@@ -124,12 +124,13 @@ jobs:
         run: |
           set -euo pipefail
           TAG='${{ github.event.release.tag_name }}'
-          # Full SemVer 2.0.0 grammar: optional `-prerelease` and optional
-          # `+build` metadata (cargo strips build metadata from the on-
-          # registry version, but we accept it on the tag for traceability,
-          # e.g. `v0.2.0+ci.42`).
-          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?)$ ]]; then
-            echo "::error::Tag '$TAG' does not match 'v<semver>' (RFC SemVer 2.0.0, with optional prerelease and build metadata)"
+          # cargo / crates.io grammar: MAJOR.MINOR.PATCH with optional
+          # `-prerelease`. SemVer `+build` metadata is intentionally NOT
+          # accepted — cargo strips it on publish, so a `+build` tag
+          # would never match Cargo.toml or the registry, only opening
+          # a duplicate-publish footgun for no real benefit.
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?)$ ]]; then
+            echo "::error::Tag '$TAG' does not match 'v<MAJOR>.<MINOR>.<PATCH>[-<prerelease>]' (build metadata '+...' is not accepted, see release.yml comment)"
             exit 1
           fi
           echo "version=${BASH_REMATCH[1]}" >>"$GITHUB_OUTPUT"
