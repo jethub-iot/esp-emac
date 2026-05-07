@@ -8,7 +8,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  # Note: do NOT set `RUSTFLAGS` at workflow scope — Cargo treats the env
+  # var as a full override of `rustflags` in `.cargo/config.toml`, which
+  # would silently drop the `-Tlinkall.x` link-arg the xtensa example
+  # build needs. `-D warnings` enforcement happens through clippy's own
+  # `-- -D warnings` and a per-job `RUSTDOCFLAGS` for rustdoc, which
+  # don't interfere with the link line.
 
 # Multiple jobs need the sibling jethub-iot/eth-phy-rs repo so that the
 # `path = "../eth-phy/..."` deps in this Cargo.toml resolve at build
