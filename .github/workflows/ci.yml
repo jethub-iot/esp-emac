@@ -48,7 +48,7 @@ jobs:
       # surface. `--tests` is intentionally omitted because the
       # `regs/*` test modules have `assert!(BASE < ...)` compile-time
       # layout checks that newer clippy flags as `assertions_on_constants`
-      # — those run as proper unit tests in the `test` job.
+      # — those run as proper unit tests in the `cargo test` step below.
       - name: clippy --lib (mdio-phy + embassy-net + async + defmt)
         working-directory: esp-emac
         run: cargo clippy --lib --features 'mdio-phy embassy-net async defmt' -- -D warnings

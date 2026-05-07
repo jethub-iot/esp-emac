@@ -10,10 +10,12 @@ name: Release
 # `cargo publish` emits a registry-only `version = "..."` dep once the local
 # `path = "..."` is stripped, and verification will pull that registry copy.
 #
-# Pipeline:
-#   1. verify         — re-run the full CI matrix as a gate. No green → no publish.
-#   2. verify-version — confirm tag matches Cargo.toml.
-#   3. publish        — sparse-index skip-check, dry-run, then cargo publish.
+# Pipeline (mirrors ci.yml — no green → no publish):
+#   1. verify         — host fmt + clippy + test + rustdoc on the tagged ref.
+#   2. verify-xtensa  — re-run the xtensa example build on the tagged ref.
+#   3. verify-msrv    — re-run the MSRV 1.88 host build on the tagged ref.
+#   4. verify-version — confirm tag matches Cargo.toml.
+#   5. publish        — sparse-index skip-check, dry-run, then cargo publish.
 #
 # The draft Release itself is kept up-to-date by release-drafter.yml: every
 # merged PR refreshes the draft. A maintainer reviews, edits, and publishes
@@ -86,10 +88,31 @@ jobs:
       - working-directory: esp-emac
         run: cargo build --release --example embassy_net_lan8720a --target xtensa-esp32-none-elf --features 'esp-hal mdio-phy embassy-net'
 
+  verify-msrv:
+    name: Verify MSRV 1.88 still builds (host)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          path: esp-emac
+      - uses: actions/checkout@v6
+        with:
+          repository: jethub-iot/eth-phy-rs
+          path: eth-phy
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: esp-emac
+      - working-directory: esp-emac
+        run: cargo build --lib
+      - working-directory: esp-emac
+        run: cargo build --lib --features 'mdio-phy embassy-net async defmt'
+
   verify-version:
     name: Verify tag matches Cargo.toml
     runs-on: ubuntu-latest
-    needs: [verify, verify-xtensa]
+    needs: [verify, verify-xtensa, verify-msrv]
     outputs:
       version: ${{ steps.tag.outputs.version }}
     steps:
@@ -101,8 +124,12 @@ jobs:
         run: |
           set -euo pipefail
           TAG='${{ github.event.release.tag_name }}'
-          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?)$ ]]; then
-            echo "::error::Tag '$TAG' does not match 'v<semver>'"
+          # Full SemVer 2.0.0 grammar: optional `-prerelease` and optional
+          # `+build` metadata (cargo strips build metadata from the on-
+          # registry version, but we accept it on the tag for traceability,
+          # e.g. `v0.2.0+ci.42`).
+          if [[ ! "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?(\+[A-Za-z0-9.-]+)?)$ ]]; then
+            echo "::error::Tag '$TAG' does not match 'v<semver>' (RFC SemVer 2.0.0, with optional prerelease and build metadata)"
             exit 1
           fi
           echo "version=${BASH_REMATCH[1]}" >>"$GITHUB_OUTPUT"
@@ -119,7 +146,7 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    needs: [verify, verify-xtensa, verify-version]
+    needs: [verify, verify-xtensa, verify-msrv, verify-version]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -140,14 +167,17 @@ jobs:
             echo "skip=false" >>"$GITHUB_OUTPUT"
           fi
 
+      # `cargo publish --dry-run` packages and verifies against the
+      # registry's read API but never authenticates, so we don't pass
+      # `CARGO_REGISTRY_TOKEN` here. Keeping the token off this step
+      # narrows its blast radius.
+      #
+      # The default `--verify` step compiles the packaged crate against
+      # the **default** feature set. esp-emac's default is empty
+      # (no `esp-hal`, no `eth-mdio-phy`), so the host-target build has
+      # no path-dep on the sibling eth-phy-rs repo.
       - name: Dry-run publish
         if: steps.check.outputs.skip == 'false'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.JETHUB_CRATES_TOKEN }}
-        # `cargo publish` defaults to `--verify`, which compiles the
-        # packaged crate against the **default** feature set. esp-emac's
-        # default is empty (no `esp-hal`, no `eth-mdio-phy`), so the
-        # host-target build has no path-dep on the sibling eth-phy-rs repo.
         run: cargo publish --dry-run
 
       - name: Publish to crates.io
