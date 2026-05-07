@@ -13,9 +13,20 @@
 #
 # `[build] target` is intentionally NOT set here — `cargo test` on the
 # host needs to keep using the host triple.
+#
+# Linker scripts:
+#   * `-Tlinkall.x` pulls in esp-hal's master script (which `INCLUDE`s
+#     `alias.x`, `esp32.x` interrupt vectors, and `hal-defaults.x`).
+#     It lives in esp-hal's `OUT_DIR`, exposed via `cargo:rustc-link-search`,
+#     but nothing emits a `-T` for it automatically — so we do it here.
+#   * `-nostartfiles` keeps the host C runtime out of the link; xtensa-lx-rt
+#     supplies the reset vector and startup code via its own linker fragments.
 
 [target.xtensa-esp32-none-elf]
-rustflags = ["-C", "link-arg=-nostartfiles"]
+rustflags = [
+    "-C", "link-arg=-Tlinkall.x",
+    "-C", "link-arg=-nostartfiles",
+]
 
 [unstable]
 build-std = ["core", "alloc"]
