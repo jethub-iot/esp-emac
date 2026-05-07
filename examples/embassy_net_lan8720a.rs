@@ -28,7 +28,11 @@ use esp_backtrace as _; // installs the `#[panic_handler]`
 use embassy_executor::Spawner;
 use embassy_net::{DhcpConfig, Runner, Stack, StackResources};
 use embassy_time::{Duration, Timer};
-use esp_hal::{delay::Delay, interrupt::Priority, rng::Rng};
+use esp_hal::{
+    delay::Delay,
+    interrupt::{software::SoftwareInterruptControl, Priority},
+    rng::Rng,
+};
 
 use esp_emac::config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
 use esp_emac::embassy::{EmacDefaultDriver, EmacDriverState};
@@ -84,9 +88,13 @@ async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
 
     // esp-rtos owns the embassy timer + scheduler. Required before any
-    // `Timer::after(...)` or task spawning can fire.
+    // `Timer::after(...)` or task spawning can fire. As of esp-rtos 0.3
+    // the scheduler also needs the `FROM_CPU0` software interrupt to
+    // drive context switches, so we hand it `software_interrupt0` from
+    // `SoftwareInterruptControl`.
     let timg0 = esp_hal::timer::timg::TimerGroup::new(peripherals.TIMG0);
-    esp_rtos::start(timg0.timer0);
+    let sw_ints = SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
+    esp_rtos::start(timg0.timer0, sw_ints.software_interrupt0);
 
     let mut delay = Delay::new();
     let rng = Rng::new();
@@ -143,7 +151,10 @@ async fn main(spawner: Spawner) {
         net_seed,
     );
 
-    spawner.spawn(net_task(runner)).unwrap();
+    // embassy-executor 0.10: `#[task]` functions return
+    // `Result<SpawnToken<_>, SpawnError>`, and `Spawner::spawn` returns
+    // `()`. So the `.unwrap()` belongs on the task call, not the spawn.
+    spawner.spawn(net_task(runner).unwrap());
 
     // Hot loop: wait for DHCP, then idle. In a real app you'd hand the
     // stack to your TCP/UDP services here.
