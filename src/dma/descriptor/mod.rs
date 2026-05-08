@@ -175,8 +175,16 @@ impl TxDescriptor {
     /// Sets the buffer length and first/last segment flags.
     /// Does **not** set the OWN bit — call [`set_owned`](Self::set_owned)
     /// afterwards to submit to DMA.
+    ///
+    /// CIC (Checksum Insertion Control) is always set to 0b11 (bits 23:22),
+    /// which instructs the MAC to insert the IPv4 header checksum and the
+    /// TCP/UDP/ICMP payload checksum including the pseudo-header. For
+    /// non-IPv4 frames the MAC ignores the CIC field, so setting it
+    /// unconditionally is safe.
     pub fn prepare(&self, len: usize, first: bool, last: bool) {
-        let mut flags = tdes0::SECOND_ADDR_CHAINED;
+        // CIC = 0b11: full TCP/UDP/ICMP + IPv4-header checksum insertion.
+        let mut flags =
+            tdes0::SECOND_ADDR_CHAINED | (0b11u32 << tdes0::CHECKSUM_INSERT_SHIFT);
 
         if first {
             flags |= tdes0::FIRST_SEGMENT;
@@ -579,6 +587,17 @@ mod tests {
         let raw = desc.raw_tdes0();
         assert!(raw & tdes0::FIRST_SEGMENT == 0);
         assert!(raw & tdes0::LAST_SEGMENT != 0);
+    }
+
+    #[test]
+    fn tx_descriptor_prepare_sets_cic_full_offload() {
+        // CIC = 0b11 in bits 23:22 means the MAC inserts IPv4 + TCP/UDP/ICMP
+        // checksums with pseudo-header. Verify prepare() always sets it.
+        let desc = TxDescriptor::new();
+        desc.prepare(64, true, true);
+        let raw = desc.raw_tdes0();
+        let cic = (raw >> tdes0::CHECKSUM_INSERT_SHIFT) & 0x3;
+        assert_eq!(cic, 0b11, "CIC must be 0b11 for full HW checksum offload");
     }
 
     #[test]

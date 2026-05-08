@@ -286,12 +286,20 @@ impl<const RX: usize, const TX: usize, const BUF: usize> Emac<RX, TX, BUF> {
 
         // 8. MAC configuration defaults: 100 Mbps full duplex, port select,
         //    auto pad/CRC strip, jabber + watchdog disabled.
+        //
+        //    CHECKSUM_OFFLOAD (IPC, bit 10): enables RX IPv4/TCP/UDP/ICMP
+        //    checksum verification. The MAC stores the result in RDES4
+        //    (extended descriptor, ATDS=1). With DMAOPERATION.DT=0 (our
+        //    default), the DMA automatically drops frames with checksum
+        //    errors before they reach the CPU, so the SW receive path
+        //    sees only frames the hardware has verified as good.
         let mac_cfg = config::PORT_SELECT
             | config::SPEED_100
             | config::DUPLEX_FULL
             | config::AUTO_PAD_CRC_STRIP
             | config::JABBER_DISABLE
-            | config::WATCHDOG_DISABLE;
+            | config::WATCHDOG_DISABLE
+            | config::CHECKSUM_OFFLOAD;
         mac_regs::set_config(mac_cfg);
 
         // Frame filter: pass all multicast (broadcast accepted by default).
