@@ -19,7 +19,7 @@ TCP/IP stack.
 
 ```toml
 [dependencies]
-esp-emac        = { version = "0.2", features = ["esp-hal", "mdio-phy", "embassy-net"] }
+esp-emac        = { version = "0.3", features = ["esp-hal", "mdio-phy", "embassy-net"] }
 eth-mdio-phy    = "0.2"
 eth-phy-lan87xx = "0.2"   # or any other eth_mdio_phy::PhyDriver impl
 
@@ -56,6 +56,7 @@ The typical firmware build enables `esp-hal + mdio-phy + embassy-net`.
 
 | esp-emac | esp-hal | embassy-net | embassy-executor | Rust target |
 | --- | --- | --- | --- | --- |
+| 0.3.x | 1.1.x | 0.9.x | 0.10.x | `xtensa-esp32-none-elf` |
 | 0.2.x | 1.1.x | 0.9.x | 0.10.x | `xtensa-esp32-none-elf` |
 
 Other ESP variants (S2/S3/C-series/H2) have **no** built-in EMAC — use
@@ -299,6 +300,13 @@ silently produces an off-frequency RMII reference clock.
   any `embedded_hal::delay::DelayNs`.
 * `clock` — APLL 50 MHz programming for the RMII reference clock,
   plus GPIO0/16/17 routing.
+* **Hardware checksum offload** (since 0.3.0) — unconditional. TX
+  descriptors request full IPv4/TCP/UDP/ICMP checksum insertion
+  (`TDES0.CIC = 0b11`); RX path uses `GMACCONFIG.IPC` and silently
+  drops frames with bad checksums before they reach the host. The
+  `embassy-net` adapter advertises `Checksum::None` for those
+  protocols so smoltcp skips the software computation. No API; no
+  feature flag; nothing for the caller to do.
 
 ### RMII clock modes
 
