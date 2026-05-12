@@ -183,8 +183,7 @@ impl TxDescriptor {
     /// unconditionally is safe.
     pub fn prepare(&self, len: usize, first: bool, last: bool) {
         // CIC = 0b11: full TCP/UDP/ICMP + IPv4-header checksum insertion.
-        let mut flags =
-            tdes0::SECOND_ADDR_CHAINED | (0b11u32 << tdes0::CHECKSUM_INSERT_SHIFT);
+        let mut flags = tdes0::SECOND_ADDR_CHAINED | (0b11u32 << tdes0::CHECKSUM_INSERT_SHIFT);
 
         if first {
             flags |= tdes0::FIRST_SEGMENT;
