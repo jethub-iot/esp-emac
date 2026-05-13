@@ -285,6 +285,73 @@ pub fn set_promiscuous(enable: bool) {
     }
 }
 
+/// Toggle "Disable Broadcast Frames" in the GMAC Frame Filter register
+/// (`GMACFF`, bit 5 — `DBF`).
+///
+/// When `enable == true` the MAC drops every frame with a broadcast
+/// destination address (`FF:FF:FF:FF:FF:FF`) before it reaches the
+/// descriptor ring. Multicast frames, unicast frames addressed to
+/// `ADDR0` / hash-table entries, and frames admitted by promiscuous /
+/// receive-all bypass paths are unaffected.
+///
+/// Performed as a strict read-modify-write so the other filter bits
+/// (`PROMISCUOUS`, `HASH_UNICAST`, `HASH_MULTICAST`, `DA_INVERSE`,
+/// `PASS_ALL_MULTICAST`, `RECEIVE_ALL`, the `PCF` / `SAF` / `SAIF`
+/// fields, etc.) survive untouched. A naive
+/// `set_frame_filter(DISABLE_BROADCAST)` would clear them all, which is
+/// rarely what callers want.
+///
+/// Intended use cases:
+///
+/// - **Directed-unicast measurement** on a shared L2 segment where
+///   broadcast traffic from the rest of the network (ARP, DHCP, mDNS,
+///   LLDP, IPv6 NDP) would otherwise pollute RX counters and consume
+///   descriptor-ring slots. The MAC stays in non-promiscuous mode,
+///   accepting only frames addressed to `ADDR0` plus any active
+///   multicast entries.
+/// - **Power-budgeted sensor nodes** that do not participate in
+///   broadcast-discovery protocols and want to keep the CPU idle when
+///   such frames pass on the wire.
+///
+/// If `frame_filter::RECEIVE_ALL` (bit 31) is also set, the Synopsys
+/// GMAC bypasses every filter bit including `DBF` — broadcasts will
+/// still be admitted. Callers using `RECEIVE_ALL` for sniffer purposes
+/// should not expect `set_disable_broadcast(true)` to take effect.
+///
+/// Not intended for production stack use where standard IPv4 / IPv6
+/// operation requires receiving ARP / NDP broadcasts.
+///
+/// # Precondition
+///
+/// Touches a memory-mapped register at the GMAC base. The EMAC peripheral
+/// clock must be enabled before this is called — `Emac::init` brings the
+/// clock up, so the typical call sequence is `Emac::init(...)` followed
+/// by `regs::mac::set_disable_broadcast(true)` once the driver is ready.
+/// The helper is `pub` and `safe` so calling it before the clock is on
+/// will not be caught by the type system; the resulting access will fault
+/// (bus error) at runtime. The precondition is shared with every other
+/// `regs::mac::*` helper in this module.
+///
+/// There is no ordering interaction with [`set_mac_address`] — that
+/// helper touches `GMACADDR0H` / `GMACADDR0L`, this one touches
+/// `GMACFF`. Either may be called first; the typical sequence is
+/// `set_mac_address` followed by `set_disable_broadcast` so the unicast
+/// filter has a definite identity before the broadcast bypass is
+/// disarmed.
+#[inline]
+pub fn set_disable_broadcast(enable: bool) {
+    // SAFETY: GMACFF is a known-valid 32-bit memory-mapped register;
+    // an RMW preserves the other filter bits. See the rustdoc above
+    // for the absent ordering interaction with `set_mac_address`.
+    unsafe {
+        if enable {
+            set_bits(GMACFF, frame_filter::DISABLE_BROADCAST);
+        } else {
+            clear_bits(GMACFF, frame_filter::DISABLE_BROADCAST);
+        }
+    }
+}
+
 /// Write the 64-bit hash filter table (low → `GMACHASTL`, high → `GMACHASTH`).
 #[inline(always)]
 pub fn set_hash_table(value: u64) {
