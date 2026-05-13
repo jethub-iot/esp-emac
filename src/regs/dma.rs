@@ -387,8 +387,9 @@ pub fn rx_poll_demand() {
 ///    rate the field saturates in ~8 s, so observability code that
 ///    cares about exact counts should sample this at least every
 ///    second and accumulate the deltas in a sticky counter (see
-///    [`crate::instrumentation::EmacInstrumentation`] under the `instrumentation`
-///    feature for an in-tree implementation of that pattern).
+///    `EmacInstrumentation::snapshot` in the `instrumentation` module
+///    under the `instrumentation` feature for an in-tree implementation
+///    of that pattern).
 /// 2. **`fifo_ovf`** — `DMAMISSEDFR[31:16]` — FIFO Overflow Counter:
 ///    the number of frames dropped because the GMAC RX FIFO filled
 ///    before the DMA could drain it (typically AHB-bus contention or
@@ -400,9 +401,9 @@ pub fn rx_poll_demand() {
 /// **Reading `DMAMISSEDFR` clears both fields atomically.** Each call to
 /// this helper therefore returns the count *since the last call* and
 /// **must not be invoked twice without storing the prior result**. The
-/// instrumentation layer in [`crate::embassy_net::EmacDriverState`] handles
-/// this by keeping a sticky `AtomicU32` accumulator and reading the
-/// register exactly once per snapshot.
+/// instrumentation layer in `EmacDriverState` (under the `embassy-net`
+/// feature) handles this by keeping a sticky `AtomicU32` accumulator
+/// and reading the register exactly once per snapshot.
 ///
 /// Returns `(mfc, fifo_ovf)` as separately decoded `u32` values (both
 /// zero-extended from their 16-bit hardware fields for easy arithmetic).

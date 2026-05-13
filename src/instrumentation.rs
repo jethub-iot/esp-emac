@@ -36,10 +36,12 @@ pub const HISTOGRAM_BUCKETS: usize = 16;
 /// Upper bound (microseconds, inclusive) for each [`HISTOGRAM_BUCKETS`]
 /// bucket. A measurement `d_us` lands in the lowest-index bucket `i`
 /// where `d_us <= HISTOGRAM_UPPER_US[i]`. The last entry is `u32::MAX`
-/// so any measurement of 100 ms or more is captured rather than lost.
+/// so any measurement strictly greater than 50 ms still has a bucket
+/// (any value with no smaller threshold lands in the overflow bucket).
 ///
-/// Sequence: `1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000, 2_000, 5_000,
-/// 10_000, 20_000, 50_000, ≥100_000`.
+/// Upper bounds (µs): `1, 2, 5, 10, 20, 50, 100, 200, 500, 1_000,
+/// 2_000, 5_000, 10_000, 20_000, 50_000, u32::MAX` — fifteen explicit
+/// log-scale thresholds plus an overflow bucket.
 pub const HISTOGRAM_UPPER_US: [u32; HISTOGRAM_BUCKETS] = [
     1,
     2,
@@ -153,8 +155,12 @@ pub struct EmacInstrumentation {
     /// (`DMAMISSEDFR[31:16]`). Same clear-on-read semantics as
     /// [`Self::dma_missed_frames`].
     pub dma_fifo_overflow: u32,
-    /// Distribution of IRQ-to-RX-token-consume latency (microseconds).
-    /// Bucket boundaries are given by [`HISTOGRAM_UPPER_US`].
+    /// Distribution of RX latency from the EMAC IRQ that observed
+    /// `RI` (rx_complete) to the moment the matching `RxToken`'s
+    /// `consume` closure **returns** — i.e. it includes the user-
+    /// provided closure body. Useful for measuring the full receiver
+    /// path; not a pure scheduling-only metric. Bucket boundaries are
+    /// given by [`HISTOGRAM_UPPER_US`].
     pub rx_irq_to_token_histogram: [u32; HISTOGRAM_BUCKETS],
     /// Distribution of TX-token-creation-to-`Emac::transmit`-completion
     /// latency (microseconds). Bucket boundaries are given by

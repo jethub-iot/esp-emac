@@ -281,8 +281,10 @@ pub struct EmacDriverState {
     /// pending IRQ", set whenever an RxToken consumes a frame.
     #[cfg(feature = "instrumentation")]
     pub(crate) last_rx_irq_us: AtomicU32,
-    /// IRQ→RX-token latency histogram. Bucket boundaries
-    /// [`crate::instrumentation::HISTOGRAM_UPPER_US`].
+    /// Latency histogram for `rx_complete` IRQ → RxToken `consume`
+    /// **return** (includes user-closure time — see the matching
+    /// field on `EmacInstrumentation` for the full semantics).
+    /// Bucket boundaries [`crate::instrumentation::HISTOGRAM_UPPER_US`].
     #[cfg(feature = "instrumentation")]
     pub(crate) rx_irq_to_token_us: [AtomicU32; HISTOGRAM_BUCKETS],
     /// TX-token-start→`Emac::transmit`-completion latency histogram.
