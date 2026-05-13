@@ -48,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   destination-address filtering would reject otherwise-wanted frames
   (e.g. loopback configurations where dst_mac == src_mac, or sniffer /
   monitor applications).
+- `regs::mac::set_disable_broadcast(enable: bool)` toggling `GMACFF.DBF`
+  as a strict RMW. Mirror of `set_promiscuous`: when enabled the MAC
+  drops every frame with a broadcast destination MAC before it reaches
+  the descriptor ring. Useful for directed-unicast measurement on a
+  shared L2 segment where ARP / DHCP / mDNS / LLDP / NDP broadcasts
+  would otherwise pollute RX counters.
 - `EmacBench = Emac<32, 16, 1600>` (with companion `BENCH_RX` / `BENCH_TX`
   consts) — deeper descriptor-ring configuration for high-pps
   workloads where the default 10/10/1600 ring drops frames. Memory
