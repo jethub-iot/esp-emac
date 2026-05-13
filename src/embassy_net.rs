@@ -157,7 +157,11 @@ use embassy_net_driver::{
 };
 use embassy_sync::waitqueue::AtomicWaker;
 
-use crate::emac::{Emac, DEFAULT_BUF, DEFAULT_RX, DEFAULT_TX, SMALL_RX, SMALL_TX};
+use crate::emac::{
+    Emac, BENCH_RX, BENCH_TX, DEFAULT_BUF, DEFAULT_RX, DEFAULT_TX, SMALL_RX, SMALL_TX,
+};
+#[cfg(feature = "instrumentation")]
+use crate::instrumentation::{histogram_bucket, now_us, HISTOGRAM_BUCKETS, IRQ_TIMESTAMP_NONE};
 use crate::interrupt::InterruptStatus;
 
 /// Diagnostic snapshot of the `Driver::receive` / `Driver::transmit`
@@ -242,13 +246,51 @@ pub struct EmacDriverState {
     /// Last observed raw DMASTAT (snapshot taken in ISR, before W1C).
     last_dmastat: AtomicU32,
     /// Counters bumped by [`EmacDriver::receive`] / [`EmacDriver::transmit`]
-    /// to see how often embassy-net actually pulls data.
-    drv_rx_calls: AtomicU32,
-    drv_rx_some: AtomicU32,
-    drv_rx_dropped: AtomicU32,
-    drv_tx_calls: AtomicU32,
-    drv_tx_some: AtomicU32,
-    drv_tx_dropped: AtomicU32,
+    /// to see how often embassy-net actually pulls data. `pub(crate)` so
+    /// the [`crate::instrumentation`] snapshot/reset path can read them
+    /// directly under the `instrumentation` feature.
+    pub(crate) drv_rx_calls: AtomicU32,
+    pub(crate) drv_rx_some: AtomicU32,
+    pub(crate) drv_rx_dropped: AtomicU32,
+    pub(crate) drv_tx_calls: AtomicU32,
+    pub(crate) drv_tx_some: AtomicU32,
+    pub(crate) drv_tx_dropped: AtomicU32,
+    // ── Instrumentation fields (feature `instrumentation`) ──────────
+    //
+    // Raw byte counters in `AtomicU32`. Xtensa LX6 has no `AtomicU64`,
+    // so the counter wraps every 2³² bytes (≈ 4 GB; ≈ 340 s at sustained
+    // 100BASE-TX line rate). Callers running longer than that should
+    // snapshot-and-reset periodically. All `pub(crate)` so the
+    // snapshot/reset code in `crate::instrumentation` can touch them.
+    /// Total bytes received through `EmacRxToken::consume`.
+    #[cfg(feature = "instrumentation")]
+    pub(crate) drv_rx_bytes: AtomicU32,
+    /// Total bytes transmitted through `EmacTxToken::consume`.
+    #[cfg(feature = "instrumentation")]
+    pub(crate) drv_tx_bytes: AtomicU32,
+    /// Sticky accumulator of `DMAMISSEDFR[15:0]` rolled forward across
+    /// the clear-on-read register.
+    #[cfg(feature = "instrumentation")]
+    pub(crate) dma_missed_frames: AtomicU32,
+    /// Sticky accumulator of `DMAMISSEDFR[31:16]`.
+    #[cfg(feature = "instrumentation")]
+    pub(crate) dma_fifo_overflow: AtomicU32,
+    /// Microsecond timestamp (`now_us()`) of the most recent RX
+    /// interrupt that observed `RI` (rx_complete) and had not yet been
+    /// consumed by a paired `RxToken`. `IRQ_TIMESTAMP_NONE` means "no
+    /// pending IRQ", set whenever an RxToken consumes a frame.
+    #[cfg(feature = "instrumentation")]
+    pub(crate) last_rx_irq_us: AtomicU32,
+    /// Latency histogram for `rx_complete` IRQ → RxToken `consume`
+    /// **return** (includes user-closure time — see the matching
+    /// field on `EmacInstrumentation` for the full semantics).
+    /// Bucket boundaries [`crate::instrumentation::HISTOGRAM_UPPER_US`].
+    #[cfg(feature = "instrumentation")]
+    pub(crate) rx_irq_to_token_us: [AtomicU32; HISTOGRAM_BUCKETS],
+    /// TX-token-start→`Emac::transmit`-completion latency histogram.
+    /// Bucket boundaries [`crate::instrumentation::HISTOGRAM_UPPER_US`].
+    #[cfg(feature = "instrumentation")]
+    pub(crate) tx_token_to_dma_us: [AtomicU32; HISTOGRAM_BUCKETS],
 }
 
 impl Default for EmacDriverState {
@@ -279,6 +321,20 @@ impl EmacDriverState {
             drv_tx_calls: AtomicU32::new(0),
             drv_tx_some: AtomicU32::new(0),
             drv_tx_dropped: AtomicU32::new(0),
+            #[cfg(feature = "instrumentation")]
+            drv_rx_bytes: AtomicU32::new(0),
+            #[cfg(feature = "instrumentation")]
+            drv_tx_bytes: AtomicU32::new(0),
+            #[cfg(feature = "instrumentation")]
+            dma_missed_frames: AtomicU32::new(0),
+            #[cfg(feature = "instrumentation")]
+            dma_fifo_overflow: AtomicU32::new(0),
+            #[cfg(feature = "instrumentation")]
+            last_rx_irq_us: AtomicU32::new(IRQ_TIMESTAMP_NONE),
+            #[cfg(feature = "instrumentation")]
+            rx_irq_to_token_us: [const { AtomicU32::new(0) }; HISTOGRAM_BUCKETS],
+            #[cfg(feature = "instrumentation")]
+            tx_token_to_dma_us: [const { AtomicU32::new(0) }; HISTOGRAM_BUCKETS],
         }
     }
 
@@ -383,6 +439,23 @@ impl EmacDriverState {
         self.last_dmastat.store(raw, Ordering::Relaxed);
         if status.rx_complete {
             self.irq_ri.fetch_add(1, Ordering::Relaxed);
+            // Instrumentation: record IRQ timestamp so the paired
+            // RxToken can compute the IRQ→token latency once embassy-net
+            // schedules the consumer. CAS-style "only set if currently
+            // NONE" to avoid clobbering a still-pending measurement —
+            // if multiple frames arrive back-to-back, the first frame's
+            // latency stays accurate and subsequent measurements collapse
+            // into the next IRQ's timestamp, which is the conservative
+            // bound we want.
+            #[cfg(feature = "instrumentation")]
+            {
+                let _ = self.last_rx_irq_us.compare_exchange(
+                    IRQ_TIMESTAMP_NONE,
+                    now_us(),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                );
+            }
         }
         if status.rx_buf_unavailable {
             self.irq_ru.fetch_add(1, Ordering::Relaxed);
@@ -536,6 +609,13 @@ pub type EmacDefaultDriver<'d> = EmacDriver<'d, DEFAULT_RX, DEFAULT_TX, DEFAULT_
 /// See [`EmacDefaultDriver`] for the rationale.
 pub type EmacSmallDriver<'d> = EmacDriver<'d, SMALL_RX, SMALL_TX, DEFAULT_BUF>;
 
+/// Driver for the [`crate::EmacBench`] ring sizing.
+///
+/// See [`EmacDefaultDriver`] for the rationale. Use when callers need
+/// the deeper 32/16 descriptor depth — e.g. when `EmacDefaultDriver`
+/// reports `drv_rx_dropped` events under sustained high packet rates.
+pub type EmacBenchDriver<'d> = EmacDriver<'d, BENCH_RX, BENCH_TX, DEFAULT_BUF>;
+
 // =============================================================================
 // RX / TX tokens
 // =============================================================================
@@ -552,13 +632,30 @@ impl<const RX: usize, const TX: usize, const BUF: usize> RxToken for EmacRxToken
     where
         F: FnOnce(&mut [u8]) -> R,
     {
+        // Instrumentation: latch the IRQ→token latency for this frame.
+        // The ISR set `last_rx_irq_us` to `now_us()` (sentinel-CAS),
+        // so reading it here gives the wait between hardware completion
+        // and embassy-net's actual descriptor pull. Restore the sentinel
+        // so the next RX IRQ records a fresh timestamp.
+        #[cfg(feature = "instrumentation")]
+        let irq_us = self
+            .state
+            .last_rx_irq_us
+            .swap(IRQ_TIMESTAMP_NONE, Ordering::Relaxed);
+
         let mut buffer = [0u8; MAX_FRAME_SIZE];
         // SAFETY: `EmacDriver` guarantees the pointer is valid for the
         // lifetime tracked by `'a`; tokens are consumed synchronously by
         // the embassy stack.
         let emac = unsafe { &mut *self.emac };
-        match emac.receive(&mut buffer) {
-            Ok(Some(n)) => f(&mut buffer[..n]),
+        let res = match emac.receive(&mut buffer) {
+            Ok(Some(n)) => {
+                #[cfg(feature = "instrumentation")]
+                self.state
+                    .drv_rx_bytes
+                    .fetch_add(n as u32, Ordering::Relaxed);
+                f(&mut buffer[..n])
+            }
             // No frame after we already handed out a token — either an
             // error path (FrameError, BufferTooSmall: descriptor was
             // recycled by the engine) or a race where another caller
@@ -568,7 +665,18 @@ impl<const RX: usize, const TX: usize, const BUF: usize> RxToken for EmacRxToken
                 self.state.drv_rx_dropped.fetch_add(1, Ordering::Relaxed);
                 f(&mut [])
             }
+        };
+
+        // Bucket the IRQ→token latency *after* the user closure returns
+        // so the histogram captures the full path the receiver took.
+        #[cfg(feature = "instrumentation")]
+        if irq_us != IRQ_TIMESTAMP_NONE {
+            let d_us = now_us().wrapping_sub(irq_us);
+            let bucket = histogram_bucket(d_us);
+            self.state.rx_irq_to_token_us[bucket].fetch_add(1, Ordering::Relaxed);
         }
+
+        res
     }
 }
 
@@ -587,13 +695,37 @@ impl<const RX: usize, const TX: usize, const BUF: usize> TxToken for EmacTxToken
         let len = len.min(MAX_FRAME_SIZE);
         let mut buffer = [0u8; MAX_FRAME_SIZE];
         let result = f(&mut buffer[..len]);
+
+        // Instrumentation: timestamp right before the engine push so
+        // the histogram captures `Emac::transmit` (which includes the
+        // internal `copy_from_slice` to the DMA buffer + descriptor
+        // arming + `tx_poll_demand`). The user-provided closure ran
+        // above, so its cost stays out of this measurement — what we
+        // actually want is the EMAC-side latency.
+        #[cfg(feature = "instrumentation")]
+        let tx_start_us = now_us();
+
         // SAFETY: see `EmacRxToken::consume`.
         let emac = unsafe { &mut *self.emac };
-        if emac.transmit(&buffer[..len]).is_err() {
+        let push = emac.transmit(&buffer[..len]);
+
+        #[cfg(feature = "instrumentation")]
+        {
+            let d_us = now_us().wrapping_sub(tx_start_us);
+            let bucket = histogram_bucket(d_us);
+            self.state.tx_token_to_dma_us[bucket].fetch_add(1, Ordering::Relaxed);
+        }
+
+        if push.is_err() {
             // `embassy-net-driver`'s `TxToken::consume` has no fallible
             // return, so a failed push silently drops the frame. Bump
             // `tx_dropped` for diagnostics.
             self.state.drv_tx_dropped.fetch_add(1, Ordering::Relaxed);
+        } else {
+            #[cfg(feature = "instrumentation")]
+            self.state
+                .drv_tx_bytes
+                .fetch_add(len as u32, Ordering::Relaxed);
         }
         result
     }

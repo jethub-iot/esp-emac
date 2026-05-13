@@ -616,6 +616,36 @@ pub type EmacDefault = Emac<DEFAULT_RX, DEFAULT_TX, DEFAULT_BUF>;
 /// [`DEFAULT_BUF`]-byte buffers (4/4/1600).
 pub type EmacSmall = Emac<SMALL_RX, SMALL_TX, DEFAULT_BUF>;
 
+/// RX descriptor ring size for [`EmacBench`].
+pub const BENCH_RX: usize = 32;
+/// TX descriptor ring size for [`EmacBench`].
+pub const BENCH_TX: usize = 16;
+
+/// Deeper-ring EMAC configuration for high-pps or bursty workloads.
+///
+/// **Ring sizing:** 32 RX × 16 TX × [`DEFAULT_BUF`]-byte buffers.
+/// **Memory footprint:** ≈ 76.5 KiB total (32 × 32B desc + 32 × 1600B
+/// buf for RX, plus 16 × 32B desc + 16 × 1600B buf for TX — the ESP32
+/// EMAC enhanced descriptor layout is 8 dwords = 32 B per descriptor).
+///
+/// The default 10/10/1600 [`EmacDefault`] sizing is tuned for steady
+/// production traffic where DMA latency budget is small and 32 KiB of
+/// internal RAM is plenty. `EmacBench` deliberately over-provisions
+/// the rings so the DMA missed-frame counter
+/// ([`crate::regs::dma::missed_frames`]) stays at zero under burstier
+/// senders (e.g. tight spin-poll loops), which makes the measured
+/// throughput a property of the EMAC pipeline itself rather than of
+/// ring depth.
+///
+/// # Memory budget — caller's responsibility
+///
+/// The 76.5 KiB sits in `.bss` (internal DRAM only — ESP32 EMAC DMA
+/// is not PSRAM-capable on this silicon). Callers must verify their
+/// linker layout has the headroom; a typical pattern is to drop a
+/// `heap_allocator!` block of comparable size, or downsize to a
+/// `Emac<16, 8, 1600>` (≈ 38 KiB) if the full depth isn't required.
+pub type EmacBench = Emac<BENCH_RX, BENCH_TX, DEFAULT_BUF>;
+
 // =============================================================================
 // Helpers
 // =============================================================================

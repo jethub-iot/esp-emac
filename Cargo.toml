@@ -88,3 +88,12 @@ embassy-net = ["dep:embassy-net-driver", "dep:embassy-sync", "dep:critical-secti
 # blocking `embedded_hal::delay::DelayNs`. Independent of `embassy-net`.
 async       = ["dep:embedded-hal-async"]
 defmt       = ["dep:defmt"]
+# Expose per-packet instrumentation counters and IRQ→token latency
+# histograms on `EmacDriverState`, surfaced through the
+# `EmacInstrumentation` snapshot type. Off by default — production
+# firmware sees zero cost. Used by the netraw-l2-tester Phase 0
+# research firmware (see `docs/plans/netraw-l2-tester.md` §5.1 in the
+# super-repo). Pulls in `embassy-net` (where the counters live) and
+# `esp-hal` (for `Instant::now()` µs-resolution timestamps used to
+# bucket the histograms).
+instrumentation = ["embassy-net", "esp-hal"]

@@ -5,6 +5,70 @@ All notable changes to `esp-emac` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (breaking — module rename)
+
+- Rename `esp_emac::embassy` module to `esp_emac::embassy_net` — the
+  old name read as "embassy framework", but the module is in fact the
+  embassy-net `Driver` impl. New name removes the ambiguity by matching
+  the dependency name (`embassy-net`). Consumers must update their
+  imports:
+
+  ```rust
+  // before
+  use esp_emac::embassy::{EmacDefaultDriver, EmacDriverState};
+  // after
+  use esp_emac::embassy_net::{EmacDefaultDriver, EmacDriverState};
+  ```
+
+### Added
+
+- `EmacInstrumentation` snapshot API for runtime observability of EMAC
+  traffic and DMA state. Captures separate TX / RX call, byte and drop
+  counters; 16-bucket log-scale IRQ→token and TX-token→DMA latency
+  histograms; and sticky accumulators that fold the clear-on-read
+  `DMAMISSEDFR.MFC` and `DMAMISSEDFR.OVF` counters so callers do not lose
+  deltas between reads. Byte counters are raw `u32` (Xtensa LX6 has no
+  `AtomicU64`); they wrap every 2³² bytes (≈ 4 GB ≈ 340 s at sustained
+  100BASE-TX line rate) — callers running longer measurement windows
+  should snapshot-and-reset periodically. `EmacInstrumentation::snapshot`
+  and `EmacInstrumentation::reset` are safe from any non-ISR context
+  (Embassy task, blocking `main()`) once the EMAC peripheral clock is
+  enabled — both perform a volatile MMIO read of `DMAMISSEDFR` via
+  `regs::dma::missed_frames()` and will bus-fault on hosts or before
+  `Emac::init`. `reset` zeroes both the sticky counters and the
+  underlying hardware register.
+- `esp_emac::regs::dma::missed_frames()` returning `DMAMISSEDFR` as a decoded
+  `(mfc, fifo_ovf)` pair. **Clear-on-read** — see the rustdoc for the
+  consumer-side accounting requirements (`EmacInstrumentation` uses
+  sticky accumulators to absorb this).
+- `regs::mac::set_promiscuous(enable: bool)` toggling `GMACFF.PR` as a
+  strict RMW so other filter bits survive untouched. Useful when MAC
+  destination-address filtering would reject otherwise-wanted frames
+  (e.g. loopback configurations where dst_mac == src_mac, or sniffer /
+  monitor applications).
+- `EmacBench = Emac<32, 16, 1600>` (with companion `BENCH_RX` / `BENCH_TX`
+  consts) — deeper descriptor-ring configuration for high-pps
+  workloads where the default 10/10/1600 ring drops frames. Memory
+  footprint ≈ 76.5 KiB; caller is responsible for the budget. Not
+  enabled by default — production firmware continues to use
+  `EmacDefault` / `EmacSmall`.
+- `embassy_net::EmacBenchDriver<'d>` — companion embassy-net driver alias
+  matching the `EmacDefaultDriver` / `EmacSmallDriver` pattern, so
+  callers can spell `EmacBenchDriver<'static>` instead of expanding
+  `EmacDriver<'static, BENCH_RX, BENCH_TX, DEFAULT_BUF>` at every
+  Embassy-net `Runner` site.
+- New feature flag `instrumentation` (off by default; pulls in
+  `embassy-net` + `esp-hal` for the `Instant::now()`-backed µs clock
+  driving the histograms). Builds without this flag pay zero —
+  every counter, timestamp, and histogram bucket is gated behind it.
+
+### Notes
+
+- No version bump in `Cargo.toml`. These additions will be exercised
+  through consumer-side iterations before a coordinated minor release.
+
 ## [0.3.0] - 2026-05-08
 
 ### Added

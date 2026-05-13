@@ -230,6 +230,61 @@ pub fn set_frame_filter(val: u32) {
     unsafe { write(GMACFF, val) }
 }
 
+/// Toggle promiscuous mode in the GMAC Frame Filter register (`GMACFF`,
+/// bit 0 — `PR`).
+///
+/// When promiscuous mode is on the MAC forwards **every** frame to the
+/// host descriptor ring regardless of the destination address — bypass
+/// of the unicast filter populated by [`set_mac_address`], the hash
+/// table, and the broadcast/multicast bypass bits.
+///
+/// Performed as a strict read-modify-write so the other filter bits
+/// (`HASH_UNICAST`, `HASH_MULTICAST`, `DA_INVERSE`, `PASS_ALL_MULTICAST`,
+/// `DISABLE_BROADCAST`, `RECEIVE_ALL`, the `PCF`/`SAF`/`SAIF` fields,
+/// etc.) survive untouched. A naive `set_frame_filter(PR)` would clear
+/// them all, which is rarely what callers want.
+///
+/// Intended use cases:
+///
+/// - **PHY loopback testing**: in loopback the destination address on
+///   every frame equals our source address. Unicast filtering can still
+///   admit those frames if `GMACADDR0H.AE` is set correctly, but
+///   promiscuous mode removes that dependency entirely and matches the
+///   same datapath a wire-side echo configuration would exercise.
+/// - **Raw-L2 sniffer / monitor** apps that want to see frames not
+///   addressed to the local MAC.
+/// - **L2 stress / throughput measurement** where the desired test
+///   traffic uses MACs that wouldn't pass the unicast filter.
+///
+/// Not intended for production stack use; embassy-net's normal mode
+/// relies on the unicast filter to keep the descriptor ring quiet.
+///
+/// # Precondition
+///
+/// Touches a memory-mapped register at the GMAC base. The EMAC peripheral
+/// clock must be enabled before this is called — `Emac::init` brings the
+/// clock up, so the typical call sequence is `Emac::init(...)` followed
+/// by `regs::mac::set_promiscuous(true)` once the driver is ready. The
+/// helper is `pub` and `safe` so calling it before the clock is on will
+/// not be caught by the type system; the resulting access will fault
+/// (bus error) at runtime. The precondition is shared with every other
+/// `regs::mac::*` helper in this module.
+#[inline]
+pub fn set_promiscuous(enable: bool) {
+    // SAFETY: GMACFF is a known-valid 32-bit memory-mapped register;
+    // an RMW preserves the other filter bits. See the module-level
+    // notes on `set_mac_address` for the broader address-filter
+    // sequencing constraints — those apply to ADDR0H/L, not to GMACFF,
+    // so there is no ordering interaction with this helper.
+    unsafe {
+        if enable {
+            set_bits(GMACFF, frame_filter::PROMISCUOUS);
+        } else {
+            clear_bits(GMACFF, frame_filter::PROMISCUOUS);
+        }
+    }
+}
+
 /// Write the 64-bit hash filter table (low → `GMACHASTL`, high → `GMACHASTH`).
 #[inline(always)]
 pub fn set_hash_table(value: u64) {

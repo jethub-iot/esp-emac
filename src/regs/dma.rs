@@ -375,6 +375,58 @@ pub fn rx_poll_demand() {
     unsafe { write(DMARXPOLLDEMAND, 0) }
 }
 
+/// Read the Missed Frame and Buffer Overflow Counter register (`DMAMISSEDFR`,
+/// offset `0x20`) and decompose it into the two clear-on-read counters:
+///
+/// 1. **`mfc`** — `DMAMISSEDFR[15:0]` — Missed Frame Counter:
+///    the number of frames the DMA RX engine could not accept because
+///    no descriptor was owned by the host at the time of frame arrival.
+///    A non-zero reading implies the RX descriptor ring is too shallow
+///    (or the host is not returning descriptors fast enough). 16-bit
+///    field — saturates rather than wraps. At a sustained 8 kpps drop
+///    rate the field saturates in ~8 s, so observability code that
+///    cares about exact counts should sample this at least every
+///    second and accumulate the deltas in a sticky counter (see
+///    `EmacInstrumentation::snapshot` in the `instrumentation` module
+///    under the `instrumentation` feature for an in-tree implementation
+///    of that pattern).
+/// 2. **`fifo_ovf`** — `DMAMISSEDFR[31:16]` — FIFO Overflow Counter:
+///    the number of frames dropped because the GMAC RX FIFO filled
+///    before the DMA could drain it (typically AHB-bus contention or
+///    RTC/SPI traffic stalling the RX-DMA channel). 16-bit, also
+///    saturating.
+///
+/// # Side effect — clear-on-read
+///
+/// **Reading `DMAMISSEDFR` clears both fields atomically.** Each call to
+/// this helper therefore returns the count *since the last call* and
+/// **must not be invoked twice without storing the prior result**. The
+/// instrumentation layer in `EmacDriverState` (under the `embassy-net`
+/// feature) handles this by keeping a sticky `AtomicU32` accumulator
+/// and reading the register exactly once per snapshot.
+///
+/// Returns `(mfc, fifo_ovf)` as separately decoded `u32` values (both
+/// zero-extended from their 16-bit hardware fields for easy arithmetic).
+///
+/// # Precondition
+///
+/// Performs a volatile read at the DMA block's `DMAMISSEDFR` offset. The
+/// EMAC peripheral clock must be enabled before this is called —
+/// `Emac::init` brings the clock up, so the typical call sequence is
+/// `Emac::init(...)` followed by any number of `missed_frames()` polls.
+/// The helper is `pub` and `safe`, so calling it before the clock is on
+/// is not caught by the type system; the resulting MMIO access will fault
+/// (bus error) at runtime.
+#[inline]
+pub fn missed_frames() -> (u32, u32) {
+    // SAFETY: DMAMISSEDFR is a known-valid 32-bit register inside the DMA block.
+    // Single volatile read consumes both fields per the Synopsys GMAC databook.
+    let raw = unsafe { read(DMAMISSEDFR) };
+    let mfc = raw & 0xFFFF;
+    let fifo_ovf = (raw >> 16) & 0xFFFF;
+    (mfc, fifo_ovf)
+}
+
 // =============================================================================
 // Tests
 // =============================================================================

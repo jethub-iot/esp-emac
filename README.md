@@ -47,6 +47,7 @@ Target triple: `xtensa-esp32-none-elf` (install via `espup install`).
 | `esp-hal` | off | `esp_hal::interrupt` for ISR binding | Always, for hardware bring-up |
 | `mdio-phy` | off | `eth-mdio-phy` (and `EspMdio: MdioBus` impl) | When using a `PhyDriver`-based PHY (LAN87xx etc.) |
 | `embassy-net` | off | `embassy-net-driver`, `embassy-sync`, `critical-section` | When using `embassy-net` TCP/IP stack |
+| `instrumentation` | off | implies `embassy-net` + `esp-hal` | Enables the `EmacInstrumentation` snapshot API for runtime traffic / DMA observability. **Not rendered on docs.rs** — that build leaves `esp-hal` off (the docs.rs target is `riscv32imc`, no xtensa); browse the source or build docs locally with `--features instrumentation` to see it. |
 | `async` | off | `embedded-hal-async` | When using `AsyncResetController` |
 | `defmt` | off | `defmt::Format` derives | When logging through `defmt` |
 
@@ -85,7 +86,7 @@ use esp_hal::{delay::Delay, interrupt::Priority, rng::Rng};
 
 use esp_emac::config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
 use esp_emac::emac::{Duplex as EmacDuplex, Speed as EmacSpeed};
-use esp_emac::embassy::{EmacDefaultDriver, EmacDriverState};
+use esp_emac::embassy_net::{EmacDefaultDriver, EmacDriverState};
 use esp_emac::mdio::EspMdio;
 use esp_emac::EmacDefault;
 

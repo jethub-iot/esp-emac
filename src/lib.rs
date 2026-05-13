@@ -25,7 +25,7 @@
 //! # mod __doc {
 //! use esp_emac::config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
 //! use esp_emac::EmacDefault;
-//! use esp_emac::embassy::EmacDriverState;
+//! use esp_emac::embassy_net::EmacDriverState;
 //!
 //! // `Emac::new` (and therefore `EmacDefault::new`) is a `const fn`.
 //! // Storing the EMAC in a `static mut` gives compile-time BSS init
@@ -64,7 +64,8 @@
 //! | --- | --- | --- |
 //! | `esp-hal` | off | Always for hardware bring-up — pulls in [`esp_hal::interrupt`] for ISR binding. |
 //! | `mdio-phy` | off | When using a `PhyDriver`-based PHY driver via [`mdio::EspMdio`]. |
-//! | `embassy-net` | off | When using [`embassy-net`] — exposes [`embassy::EmacDriver`]. |
+//! | `embassy-net` | off | When using [`embassy-net`] — exposes [`embassy_net::EmacDriver`]. |
+//! | `instrumentation` | off | Enables [`instrumentation::EmacInstrumentation`] snapshot API on top of `embassy-net`. Implies `embassy-net` + `esp-hal`. |
 //! | `async` | off | When using [`reset::async_impl::AsyncResetController`]. |
 //! | `defmt` | off | Adds `defmt::Format` derives on public types. |
 //!
@@ -91,8 +92,10 @@ pub mod config;
 pub mod dma;
 pub mod emac;
 #[cfg(feature = "embassy-net")]
-pub mod embassy;
+pub mod embassy_net;
 pub mod error;
+#[cfg(feature = "instrumentation")]
+pub mod instrumentation;
 pub mod interrupt;
 pub mod mdio;
 pub mod regs;
@@ -101,7 +104,7 @@ pub mod reset;
 pub use config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
 #[cfg(feature = "mdio-phy")]
 pub use emac::{Duplex, Speed};
-pub use emac::{Emac, EmacDefault, EmacSmall, EmacState};
+pub use emac::{Emac, EmacBench, EmacDefault, EmacSmall, EmacState};
 pub use error::EmacError;
 pub use interrupt::InterruptStatus;
 pub use mdio::{EspMdio, MdcClockDivider};

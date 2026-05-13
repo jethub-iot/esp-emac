@@ -35,7 +35,7 @@ use esp_hal::{
 };
 
 use esp_emac::config::{ClkGpio, EmacConfig, RmiiClockConfig, RmiiPins, XtalFreq};
-use esp_emac::embassy::{EmacDefaultDriver, EmacDriverState};
+use esp_emac::embassy_net::{EmacDefaultDriver, EmacDriverState};
 use esp_emac::mdio::EspMdio;
 use esp_emac::EmacDefault;
 
