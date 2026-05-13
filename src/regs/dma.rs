@@ -406,6 +406,16 @@ pub fn rx_poll_demand() {
 ///
 /// Returns `(mfc, fifo_ovf)` as separately decoded `u32` values (both
 /// zero-extended from their 16-bit hardware fields for easy arithmetic).
+///
+/// # Precondition
+///
+/// Performs a volatile read at the DMA block's `DMAMISSEDFR` offset. The
+/// EMAC peripheral clock must be enabled before this is called —
+/// `Emac::init` brings the clock up, so the typical call sequence is
+/// `Emac::init(...)` followed by any number of `missed_frames()` polls.
+/// The helper is `pub` and `safe`, so calling it before the clock is on
+/// is not caught by the type system; the resulting MMIO access will fault
+/// (bus error) at runtime.
 #[inline]
 pub fn missed_frames() -> (u32, u32) {
     // SAFETY: DMAMISSEDFR is a known-valid 32-bit register inside the DMA block.

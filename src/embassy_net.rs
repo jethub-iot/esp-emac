@@ -257,17 +257,17 @@ pub struct EmacDriverState {
     pub(crate) drv_tx_dropped: AtomicU32,
     // ── Instrumentation fields (feature `instrumentation`) ──────────
     //
-    // Bytes are stored in KB units (`bytes / 1024`) — see
-    // `crate::instrumentation::EmacInstrumentation` docs for the rationale
-    // (Xtensa LX6 has no 64-bit atomics, KB gives ~4 TB headroom vs
-    // ~4 GB for raw bytes). All `pub(crate)` so the snapshot/reset code
-    // in `crate::instrumentation` can touch them.
-    /// Total bytes received through `EmacRxToken::consume`, KB units.
+    // Raw byte counters in `AtomicU32`. Xtensa LX6 has no `AtomicU64`,
+    // so the counter wraps every 2³² bytes (≈ 4 GB; ≈ 340 s at sustained
+    // 100BASE-TX line rate). Callers running longer than that should
+    // snapshot-and-reset periodically. All `pub(crate)` so the
+    // snapshot/reset code in `crate::instrumentation` can touch them.
+    /// Total bytes received through `EmacRxToken::consume`.
     #[cfg(feature = "instrumentation")]
-    pub(crate) drv_rx_bytes_kb: AtomicU32,
-    /// Total bytes transmitted through `EmacTxToken::consume`, KB units.
+    pub(crate) drv_rx_bytes: AtomicU32,
+    /// Total bytes transmitted through `EmacTxToken::consume`.
     #[cfg(feature = "instrumentation")]
-    pub(crate) drv_tx_bytes_kb: AtomicU32,
+    pub(crate) drv_tx_bytes: AtomicU32,
     /// Sticky accumulator of `DMAMISSEDFR[15:0]` rolled forward across
     /// the clear-on-read register.
     #[cfg(feature = "instrumentation")]
@@ -320,9 +320,9 @@ impl EmacDriverState {
             drv_tx_some: AtomicU32::new(0),
             drv_tx_dropped: AtomicU32::new(0),
             #[cfg(feature = "instrumentation")]
-            drv_rx_bytes_kb: AtomicU32::new(0),
+            drv_rx_bytes: AtomicU32::new(0),
             #[cfg(feature = "instrumentation")]
-            drv_tx_bytes_kb: AtomicU32::new(0),
+            drv_tx_bytes: AtomicU32::new(0),
             #[cfg(feature = "instrumentation")]
             dma_missed_frames: AtomicU32::new(0),
             #[cfg(feature = "instrumentation")]
@@ -649,16 +649,9 @@ impl<const RX: usize, const TX: usize, const BUF: usize> RxToken for EmacRxToken
         let res = match emac.receive(&mut buffer) {
             Ok(Some(n)) => {
                 #[cfg(feature = "instrumentation")]
-                {
-                    // Whole-KB increments — drop the sub-KB residue.
-                    // Cheap, deterministic, and consumers care about
-                    // throughput not exact-byte accounting (the wire
-                    // `iperf` channel reports the same way).
-                    let kb = (n / 1024) as u32;
-                    if kb > 0 {
-                        self.state.drv_rx_bytes_kb.fetch_add(kb, Ordering::Relaxed);
-                    }
-                }
+                self.state
+                    .drv_rx_bytes
+                    .fetch_add(n as u32, Ordering::Relaxed);
                 f(&mut buffer[..n])
             }
             // No frame after we already handed out a token — either an
@@ -728,12 +721,9 @@ impl<const RX: usize, const TX: usize, const BUF: usize> TxToken for EmacTxToken
             self.state.drv_tx_dropped.fetch_add(1, Ordering::Relaxed);
         } else {
             #[cfg(feature = "instrumentation")]
-            {
-                let kb = (len / 1024) as u32;
-                if kb > 0 {
-                    self.state.drv_tx_bytes_kb.fetch_add(kb, Ordering::Relaxed);
-                }
-            }
+            self.state
+                .drv_tx_bytes
+                .fetch_add(len as u32, Ordering::Relaxed);
         }
         result
     }

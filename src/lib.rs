@@ -65,6 +65,7 @@
 //! | `esp-hal` | off | Always for hardware bring-up — pulls in [`esp_hal::interrupt`] for ISR binding. |
 //! | `mdio-phy` | off | When using a `PhyDriver`-based PHY driver via [`mdio::EspMdio`]. |
 //! | `embassy-net` | off | When using [`embassy-net`] — exposes [`embassy_net::EmacDriver`]. |
+//! | `instrumentation` | off | Enables [`instrumentation::EmacInstrumentation`] snapshot API on top of `embassy-net`. Implies `embassy-net` + `esp-hal`. |
 //! | `async` | off | When using [`reset::async_impl::AsyncResetController`]. |
 //! | `defmt` | off | Adds `defmt::Format` derives on public types. |
 //!

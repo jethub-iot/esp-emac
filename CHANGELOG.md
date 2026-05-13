@@ -25,13 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `EmacInstrumentation` snapshot API for runtime observability of EMAC
-  traffic and DMA state. Captures separate TX / RX call, byte (KB-quantised)
-  and drop counters; 16-bucket log-scale IRQ→token and TX-token→DMA latency
+  traffic and DMA state. Captures separate TX / RX call, byte and drop
+  counters; 16-bucket log-scale IRQ→token and TX-token→DMA latency
   histograms; and sticky accumulators that fold the clear-on-read
   `DMAMISSEDFR.MFC` and `DMAMISSEDFR.OVF` counters so callers do not lose
-  deltas between reads. `EmacInstrumentation::snapshot(&state)` is safe
-  from any non-ISR context (Embassy task, blocking `main()`, host unit
-  tests); `EmacInstrumentation::reset(&state)` zeroes both the sticky
+  deltas between reads. Byte counters are raw `u32` (Xtensa LX6 has no
+  `AtomicU64`); they wrap every 2³² bytes (≈ 4 GB ≈ 340 s at sustained
+  100BASE-TX line rate) — callers running longer measurement windows
+  should snapshot-and-reset periodically. `EmacInstrumentation::snapshot`
+  is safe from any non-ISR context (Embassy task, blocking `main()`,
+  host unit tests); `EmacInstrumentation::reset` zeroes both the sticky
   counters and the underlying hardware register.
 - `esp_emac::regs::dma::missed_frames()` returning `DMAMISSEDFR` as a decoded
   `(mfc, fifo_ovf)` pair. **Clear-on-read** — see the rustdoc for the

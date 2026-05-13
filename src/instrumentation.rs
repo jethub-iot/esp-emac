@@ -112,11 +112,12 @@ pub(crate) const IRQ_TIMESTAMP_NONE: u32 = u32::MAX;
 /// to make the snapshot internally consistent against an ISR producer,
 /// and the Xtensa LX6 has neither in hardware.
 ///
-/// All byte totals are stored in kilobytes (bytes / 1024) because the
-/// Xtensa LX6 has no 64-bit atomic intrinsics — a 32-bit byte counter
-/// would wrap every ~4 GB (a few seconds of line-rate 100BASE-TX),
-/// while KB units give us ~4 TB of headroom (well past any reasonable
-/// measurement run).
+/// Byte counters (`rx_bytes` / `tx_bytes`) are raw byte totals in
+/// `u32`. Xtensa LX6 has no `AtomicU64`, so the counter wraps every
+/// 2³² bytes (≈ 4 GB; ≈ 340 s at sustained 100BASE-TX line rate).
+/// Callers running measurement windows longer than that should
+/// snapshot-and-reset periodically; for typical 30-second / 5-minute
+/// windows the wrap is many orders of magnitude away.
 ///
 /// Intended as an observability tool — counters for throughput
 /// monitoring, histograms for diagnosing where latency is spent on
@@ -128,18 +129,18 @@ pub struct EmacInstrumentation {
     pub rx_calls: u32,
     /// `Driver::receive` invocations that returned a token pair.
     pub rx_some: u32,
-    /// Total bytes received through the RX token's `consume`, in
-    /// kilobytes (`bytes / 1024`).
-    pub rx_bytes_kb: u32,
+    /// Total bytes received through the RX token's `consume`.
+    /// Wraps every 2³² bytes — see the type-level docs.
+    pub rx_bytes: u32,
     /// Frames dropped inside the RX token's `consume`.
     pub rx_dropped: u32,
     /// Total invocations of `Driver::transmit`.
     pub tx_calls: u32,
     /// `Driver::transmit` invocations that returned a token.
     pub tx_some: u32,
-    /// Total bytes transmitted through the TX token's `consume`, in
-    /// kilobytes (`bytes / 1024`).
-    pub tx_bytes_kb: u32,
+    /// Total bytes transmitted through the TX token's `consume`.
+    /// Wraps every 2³² bytes — see the type-level docs.
+    pub tx_bytes: u32,
     /// Frames dropped inside the TX token's `consume`.
     pub tx_dropped: u32,
     /// Sticky accumulator of the DMA Missed Frame Counter
@@ -199,11 +200,11 @@ impl EmacInstrumentation {
         Self {
             rx_calls: state.drv_rx_calls.load(Ordering::Relaxed),
             rx_some: state.drv_rx_some.load(Ordering::Relaxed),
-            rx_bytes_kb: state.drv_rx_bytes_kb.load(Ordering::Relaxed),
+            rx_bytes: state.drv_rx_bytes.load(Ordering::Relaxed),
             rx_dropped: state.drv_rx_dropped.load(Ordering::Relaxed),
             tx_calls: state.drv_tx_calls.load(Ordering::Relaxed),
             tx_some: state.drv_tx_some.load(Ordering::Relaxed),
-            tx_bytes_kb: state.drv_tx_bytes_kb.load(Ordering::Relaxed),
+            tx_bytes: state.drv_tx_bytes.load(Ordering::Relaxed),
             tx_dropped: state.drv_tx_dropped.load(Ordering::Relaxed),
             dma_missed_frames: state.dma_missed_frames.load(Ordering::Relaxed),
             dma_fifo_overflow: state.dma_fifo_overflow.load(Ordering::Relaxed),
@@ -229,11 +230,11 @@ impl EmacInstrumentation {
 
         state.drv_rx_calls.store(0, Ordering::Relaxed);
         state.drv_rx_some.store(0, Ordering::Relaxed);
-        state.drv_rx_bytes_kb.store(0, Ordering::Relaxed);
+        state.drv_rx_bytes.store(0, Ordering::Relaxed);
         state.drv_rx_dropped.store(0, Ordering::Relaxed);
         state.drv_tx_calls.store(0, Ordering::Relaxed);
         state.drv_tx_some.store(0, Ordering::Relaxed);
-        state.drv_tx_bytes_kb.store(0, Ordering::Relaxed);
+        state.drv_tx_bytes.store(0, Ordering::Relaxed);
         state.drv_tx_dropped.store(0, Ordering::Relaxed);
         state.dma_missed_frames.store(0, Ordering::Relaxed);
         state.dma_fifo_overflow.store(0, Ordering::Relaxed);
