@@ -47,6 +47,7 @@ Target triple: `xtensa-esp32-none-elf` (install via `espup install`).
 | `esp-hal` | off | `esp_hal::interrupt` for ISR binding | Always, for hardware bring-up |
 | `mdio-phy` | off | `eth-mdio-phy` (and `EspMdio: MdioBus` impl) | When using a `PhyDriver`-based PHY (LAN87xx etc.) |
 | `embassy-net` | off | `embassy-net-driver`, `embassy-sync`, `critical-section` | When using `embassy-net` TCP/IP stack |
+| `instrumentation` | off | implies `embassy-net` + `esp-hal` | Enables [`EmacInstrumentation`](https://docs.rs/esp-emac/latest/esp_emac/instrumentation/struct.EmacInstrumentation.html) snapshot API for runtime traffic / DMA observability |
 | `async` | off | `embedded-hal-async` | When using `AsyncResetController` |
 | `defmt` | off | `defmt::Format` derives | When logging through `defmt` |
 
